@@ -9,9 +9,9 @@ import datetime, os, shutil, glob, re
 from ietf.idtracker.models import InternetDraft, IDDates, IDStatus, IDState, DocumentComment, IDAuthor,WGChair
 from ietf.utils.mail import send_mail, send_mail_subj
 from ietf.idrfc.utils import log_state_changed, add_document_comment
-from doc.models import Document, Event, save_document_in_history
+from doc.models import Document, DocEvent, save_document_in_history
 from name.models import IesgDocStateName, DocStateName, DocInfoTagName
-from person.models import Email
+from person.models import Person, Email
 
 INTERNET_DRAFT_DAYS_TO_EXPIRE = 185
 
@@ -51,8 +51,8 @@ def get_soon_to_expire_idsREDESIGN(days):
     end_date = start_date + datetime.timedelta(days - 1)
     
     for d in expirable_documents():
-        e = document_expires(d)
-        if e and start_date <= e.date() <= end_date:
+        t = document_expires(d)
+        if t and start_date <= t.date() <= end_date:
             yield d
 
 def get_expired_ids():
@@ -68,8 +68,8 @@ def get_expired_idsREDESIGN():
     today = datetime.date.today()
 
     for d in expirable_documents():
-        e = document_expires(d)
-        if e and e.time.date() <= today:
+        t = document_expires(d)
+        if t and t.date() <= today:
             yield d
 
 def send_expire_warning_for_id(doc):
@@ -152,19 +152,20 @@ def send_expire_notice_for_idREDESIGN(doc):
 
 def expire_id(doc):
     def move_file(f):
-        src = os.path.join(settings.INTERNET_DRAFT_PATH, f)
+        src = os.path.join(settings.IDSUBMIT_REPOSITORY_PATH, f)
         dst = os.path.join(settings.INTERNET_DRAFT_ARCHIVE_DIR, f)
 
         if os.path.exists(src):
             shutil.move(src, dst)
 
     move_file("%s-%s.txt" % (doc.filename, doc.revision_display()))
+    move_file("%s-%s.txt.p7s" % (doc.filename, doc.revision_display()))
     move_file("%s-%s.ps" % (doc.filename, doc.revision_display()))
     move_file("%s-%s.pdf" % (doc.filename, doc.revision_display()))
 
     new_revision = "%02d" % (int(doc.revision) + 1)
 
-    new_file = open(os.path.join(settings.INTERNET_DRAFT_PATH, "%s-%s.txt" % (doc.filename, new_revision)), 'w')
+    new_file = open(os.path.join(settings.IDSUBMIT_REPOSITORY_PATH, "%s-%s.txt" % (doc.filename, new_revision)), 'w')
     txt = render_to_string("idrfc/expire_text.txt",
                            dict(doc=doc,
                                 authors=[a.person.email() for a in doc.authors.all()],
@@ -186,24 +187,24 @@ def expire_id(doc):
         add_document_comment(None, doc, "Document is expired by system")
 
 def expire_idREDESIGN(doc):
-    system_email = Email.objects.get(address="(System)")
+    system = Person.objects.get(name="(System)")
 
     # clean up files
     def move_file(f):
-        src = os.path.join(settings.INTERNET_DRAFT_PATH, f)
+        src = os.path.join(settings.IDSUBMIT_REPOSITORY_PATH, f)
         dst = os.path.join(settings.INTERNET_DRAFT_ARCHIVE_DIR, f)
 
         if os.path.exists(src):
             shutil.move(src, dst)
 
-    file_types = ['txt', 'ps', 'pdf']
+    file_types = ['txt', 'txt.p7s', 'ps', 'pdf']
     for t in file_types:
         move_file("%s-%s.%s" % (doc.name, doc.rev, t))
 
     # make tombstone
     new_revision = "%02d" % (int(doc.rev) + 1)
 
-    new_file = open(os.path.join(settings.INTERNET_DRAFT_PATH, "%s-%s.txt" % (doc.name, new_revision)), 'w')
+    new_file = open(os.path.join(settings.IDSUBMIT_REPOSITORY_PATH, "%s-%s.txt" % (doc.name, new_revision)), 'w')
     txt = render_to_string("idrfc/expire_textREDESIGN.txt",
                            dict(doc=doc,
                                 authors=[(e.get_name(), e.address) for e in doc.authors.all()],
@@ -219,9 +220,9 @@ def expire_idREDESIGN(doc):
         if doc.iesg_state != dead_state:
             prev = doc.iesg_state
             doc.iesg_state = dead_state
-            log_state_changed(None, doc, system_email, prev)
+            log_state_changed(None, doc, system, prev)
 
-        e = Event(doc=doc, by=system_email)
+        e = DocEvent(doc=doc, by=system)
         e.type = "expired_document"
         e.desc = "Document has expired"
         e.save()
@@ -235,12 +236,31 @@ def clean_up_id_files():
     """Move unidentified and old files out of the Internet Draft directory."""
     cut_off = datetime.date.today() - datetime.timedelta(days=InternetDraft.DAYS_TO_EXPIRE)
 
-    pattern = os.path.join(settings.INTERNET_DRAFT_PATH, "draft-*.*")
+    pattern = os.path.join(settings.IDSUBMIT_REPOSITORY_PATH, "draft-*.*")
     files = []
-    filename_re = re.compile('^(.*)-(\d+)$')
+    filename_re = re.compile('^(.*)-(\d\d)$')
+
+    def splitext(fn):
+        """
+        Split the pathname path into a pair (root, ext) such that root + ext
+        == path, and ext is empty or begins with a period and contains all
+        periods in the last path component.
+
+        This differs from os.path.splitext in the number of periods in the ext
+        parts when the final path component containt more than one period.
+        """
+        s = fn.rfind("/")
+        if s == -1:
+            s = 0
+        i = fn[s:].find(".")
+        if i == -1:
+            return fn, ''
+        else:
+            return fn[:s+i], fn[s+i:]
+
     for path in glob.glob(pattern):
         basename = os.path.basename(path)
-        stem, ext = os.path.splitext(basename)
+        stem, ext = splitext(basename)
         match = filename_re.search(stem)
         if not match:
             filename, revision = ("UNKNOWN", "00")
@@ -254,10 +274,12 @@ def clean_up_id_files():
         try:
             doc = InternetDraft.objects.get(filename=filename, revision=revision)
 
-            if doc.status_id == 3:
+            if doc.status_id == 3:      # RFC
                 if ext != ".txt":
                     move_file_to("unknown_ids")
             elif doc.status_id in (2, 4, 5, 6) and doc.expiration_date and doc.expiration_date < cut_off:
+                # Expired, Withdrawn by Auth, Replaced, Withdrawn by IETF,
+                # and expired more than DAYS_TO_EXPIRE ago
                 if os.path.getsize(path) < 1500:
                     move_file_to("deleted_tombstones")
                     # revert version after having deleted tombstone
@@ -274,12 +296,31 @@ def clean_up_id_filesREDESIGN():
     """Move unidentified and old files out of the Internet Draft directory."""
     cut_off = datetime.date.today() - datetime.timedelta(days=INTERNET_DRAFT_DAYS_TO_EXPIRE)
 
-    pattern = os.path.join(settings.INTERNET_DRAFT_PATH, "draft-*.*")
+    pattern = os.path.join(settings.IDSUBMIT_REPOSITORY_PATH, "draft-*.*")
     files = []
-    filename_re = re.compile('^(.*)-(\d+)$')
+    filename_re = re.compile('^(.*)-(\d\d)$')
+    
+    def splitext(fn):
+        """
+        Split the pathname path into a pair (root, ext) such that root + ext
+        == path, and ext is empty or begins with a period and contains all
+        periods in the last path component.
+
+        This differs from os.path.splitext in the number of periods in the ext
+        parts when the final path component containt more than one period.
+        """
+        s = fn.rfind("/")
+        if s == -1:
+            s = 0
+        i = fn[s:].find(".")
+        if i == -1:
+            return fn, ''
+        else:
+            return fn[:s+i], fn[s+i:]
+
     for path in glob.glob(pattern):
         basename = os.path.basename(path)
-        stem, ext = os.path.splitext(basename)
+        stem, ext = splitext(basename)
         match = filename_re.search(stem)
         if not match:
             filename, revision = ("UNKNOWN", "00")
@@ -301,6 +342,8 @@ def clean_up_id_filesREDESIGN():
                 expiration_date = e.time.date() if e and e.type == "expired_document" else None
 
                 if expiration_date and expiration_date < cut_off:
+                    # Expired, Withdrawn by Author, Replaced, Withdrawn by IETF,
+                    # and expired more than DAYS_TO_EXPIRE ago
                     if os.path.getsize(path) < 1500:
                         move_file_to("deleted_tombstones")
                         # revert version after having deleted tombstone

@@ -16,18 +16,21 @@ from django.conf import settings
 from ietf.utils.mail import send_mail_text
 from ietf.ietfauth.decorators import group_required
 from ietf.idtracker.templatetags.ietf_filters import in_group
+from ietf.ietfauth.decorators import has_role
 from ietf.idtracker.models import *
 from ietf.iesg.models import *
 from ietf.idrfc.mails import *
 from ietf.idrfc.utils import *
 from ietf.idrfc.lastcall import request_last_call
 
-from doc.models import Document, Event, StatusDateEvent, TelechatEvent, save_document_in_history, DocHistory
+from doc.models import Document, DocEvent, StatusDateDocEvent, TelechatDocEvent, save_document_in_history, DocHistory
 from name.models import IesgDocStateName, IntendedStdLevelName, DocInfoTagName, get_next_iesg_states, DocStateName
+from person.models import Person, Email
     
 class ChangeStateForm(forms.Form):
     state = forms.ModelChoiceField(IDState.objects.all(), empty_label=None, required=True)
     substate = forms.ModelChoiceField(IDSubState.objects.all(), required=False)
+    note = forms.CharField(widget=forms.Textarea, label="Comment", required=False)
 
 @group_required('Area_Director','Secretariat')
 def change_state(request, name):
@@ -44,6 +47,7 @@ def change_state(request, name):
         if form.is_valid():
             state = form.cleaned_data['state']
             sub_state = form.cleaned_data['substate']
+            note = form.cleaned_data['note']
             internal = doc.idinternal
             if state != internal.cur_state or sub_state != internal.cur_sub_state:
                 internal.change_state(state, sub_state)
@@ -51,7 +55,7 @@ def change_state(request, name):
                 internal.mark_by = login
                 internal.save()
 
-                change = log_state_changed(request, doc, login)
+                change = log_state_changed(request, doc, login, note=note)
                 email_owner(request, doc, internal.job_owner, login, change)
 
                 if internal.cur_state.document_state_id == IDState.LAST_CALL_REQUESTED:
@@ -84,6 +88,7 @@ class ChangeStateFormREDESIGN(forms.Form):
     state = forms.ModelChoiceField(IesgDocStateName.objects.all(), empty_label=None, required=True)
     # FIXME: no tags yet
     #substate = forms.ModelChoiceField(IDSubState.objects.all(), required=False)
+    comment = forms.CharField(widget=forms.Textarea, required=False)
 
 @group_required('Area_Director','Secretariat')
 def change_stateREDESIGN(request, name):
@@ -93,19 +98,20 @@ def change_stateREDESIGN(request, name):
     if (not doc.latest_event(type="started_iesg_process")) or doc.state_id == "expired":
         raise Http404()
 
-    login = request.user.get_profile().email()
+    login = request.user.get_profile()
 
     if request.method == 'POST':
         form = ChangeStateForm(request.POST)
         if form.is_valid():
             state = form.cleaned_data['state']
+            comment = form.cleaned_data['comment']
             if state != doc.iesg_state:
                 save_document_in_history(doc)
                 
                 prev = doc.iesg_state
                 doc.iesg_state = state
 
-                e = log_state_changed(request, doc, login, prev)
+                e = log_state_changed(request, doc, login, prev, comment)
                 
                 doc.time = e.time
                 doc.save()
@@ -196,9 +202,6 @@ class EditInfoForm(forms.Form):
         if kwargs['initial']['area_acronym'] == Acronym.INDIVIDUAL_SUBMITTER:
             # default to "gen"
             kwargs['initial']['area_acronym'] = 1008
-        else:
-            # hide area acronym if one has been assigned already
-            del self.fields['area_acronym']
         
         # returning item is rendered non-standard
         self.standard_fields = [x for x in self.visible_fields() if x.name not in ('returning_item',)]
@@ -288,9 +291,9 @@ def edit_info(request, name):
                     doc.idinternal.area_acronym = r['area_acronym']
                 
                 replaces = doc.replaces_set.all()
-                if replaces:
+                if replaces and replaces[0].idinternal:
                     c = "Earlier history may be found in the Comment Log for <a href=\"%s\">%s</a>" % (replaces[0], replaces[0].idinternal.get_absolute_url())
-                    add_document_comment(request, doc, c, include_by=False)
+                    add_document_comment(request, doc, c)
                     
             orig_job_owner = doc.idinternal.job_owner
 
@@ -371,15 +374,11 @@ def edit_info(request, name):
                                    login=login),
                               context_instance=RequestContext(request))
 
-class NameFromEmailModelChoiceField(forms.ModelChoiceField):
-    def label_from_instance(self, obj):
-        return obj.get_name()
-
 class EditInfoFormREDESIGN(forms.Form):
     intended_std_level = forms.ModelChoiceField(IntendedStdLevelName.objects.all(), empty_label=None, required=True)
     status_date = forms.DateField(required=False, help_text="Format is YYYY-MM-DD")
     via_rfc_editor = forms.BooleanField(required=False, label="Via IRTF or RFC Editor")
-    ad = NameFromEmailModelChoiceField(Email.objects.filter(role__name__in=("ad", "ex-ad")).order_by('role__name', 'person__name'), label="Responsible AD", empty_label=None, required=True)
+    ad = forms.ModelChoiceField(Person.objects.filter(email__role__name__in=("ad", "ex-ad")).order_by('email__role__name', 'name'), label="Responsible AD", empty_label=None, required=True)
     notify = forms.CharField(max_length=255, label="Notice emails", help_text="Separate email addresses with commas", required=False)
     note = forms.CharField(widget=forms.Textarea, label="IESG note", required=False)
     telechat_date = forms.TypedChoiceField(coerce=lambda x: datetime.datetime.strptime(x, '%Y-%m-%d').date(), empty_value=None, required=False)
@@ -392,7 +391,7 @@ class EditInfoFormREDESIGN(forms.Form):
 
         # fix up ad field
         choices = self.fields['ad'].choices
-        ex_ads = dict((e.pk, e) for e in Email.objects.filter(role__name="ex-ad"))
+        ex_ads = dict((e.pk, e) for e in Person.objects.filter(email__role__name="ex-ad").distinct())
         if old_ads:
             # separate active ADs from inactive
             for i, t in enumerate(choices):
@@ -455,7 +454,7 @@ def edit_infoREDESIGN(request, name):
     if doc.state_id == "expired":
         raise Http404()
 
-    login = request.user.get_profile().email()
+    login = request.user.get_profile()
 
     new_document = False
     if not doc.iesg_state: # FIXME: should probably get this as argument to view
@@ -463,7 +462,7 @@ def edit_infoREDESIGN(request, name):
         doc.iesg_state = IesgDocStateName.objects.get(slug="pub-req")
         doc.notify = get_initial_notify(doc)
 
-    e = doc.latest_event(TelechatEvent, type="scheduled_for_telechat")
+    e = doc.latest_event(TelechatDocEvent, type="scheduled_for_telechat")
     initial_telechat_date = e.telechat_date if e else None
     initial_returning_item = bool(e and e.returning_item)
 
@@ -483,15 +482,15 @@ def edit_infoREDESIGN(request, name):
                 replaces = Document.objects.filter(docalias__relateddocument__source=doc, docalias__relateddocument__relationship="replaces")
                 if replaces:
                     # this should perhaps be somewhere else, e.g. the
-                    # place where the replace relationship is established
-                    e = Event()
+                    # place where the replace relationship is established?
+                    e = DocEvent()
                     e.type = "added_comment"
-                    e.by = Email.objects.get(address="(System)")
+                    e.by = Person.objects.get(name="(System)")
                     e.doc = doc
                     e.desc = "Earlier history may be found in the Comment Log for <a href=\"%s\">%s</a>" % (replaces[0], replaces[0].get_absolute_url())
                     e.save()
 
-                e = Event()
+                e = DocEvent()
                 e.type = "started_iesg_process"
                 e.by = login
                 e.doc = doc
@@ -533,26 +532,24 @@ def edit_infoREDESIGN(request, name):
                 doc.note = r['note']
 
             for c in changes:
-                e = Event(doc=doc, by=login)
+                e = DocEvent(doc=doc, by=login)
                 e.type = "changed_document"
-                e.desc = c + " by %s" % login.get_name()
                 e.save()
 
             update_telechat(request, doc, login,
                             r['telechat_date'], r['returning_item'])
 
-            e = doc.latest_event(StatusDateEvent, type="changed_status_date")
+            e = doc.latest_event(StatusDateDocEvent, type="changed_status_date")
             status_date = e.date if e else None
             if r["status_date"] != status_date:
-                e = StatusDateEvent(doc=doc, by=login)
+                e = StatusDateDocEvent(doc=doc, by=login)
                 e.type ="changed_status_date"
                 d = desc("Status date", r["status_date"], status_date)
                 changes.append(d)
-                e.desc = d + " by %s" % login.get_name()
                 e.date = r["status_date"]
                 e.save()
             
-            if in_group(request.user, 'Secretariat'):
+            if has_role(request.user, 'Secretariat'):
                 via_rfc = DocInfoTagName.objects.get(slug="via-rfc")
                 if r['via_rfc_editor']:
                     doc.tags.add(via_rfc)
@@ -567,7 +564,7 @@ def edit_infoREDESIGN(request, name):
             doc.save()
             return HttpResponseRedirect(doc.get_absolute_url())
     else:
-        e = doc.latest_event(StatusDateEvent)
+        e = doc.latest_event(StatusDateDocEvent)
         status = e.date if e else None
         init = dict(intended_std_level=doc.intended_std_level,
                     status_date=status,
@@ -580,7 +577,7 @@ def edit_infoREDESIGN(request, name):
 
         form = EditInfoForm(old_ads=False, initial=init)
 
-    if not in_group(request.user, 'Secretariat'):
+    if not has_role(request.user, 'Secretariat'):
         # filter out Via RFC Editor
         form.standard_fields = [x for x in form.standard_fields if x.name != "via_rfc_editor"]
         
@@ -627,14 +624,14 @@ def request_resurrectREDESIGN(request, name):
     if doc.state_id != "expired":
         raise Http404()
 
-    login = request.user.get_profile().email()
+    login = request.user.get_profile()
 
     if request.method == 'POST':
         email_resurrect_requested(request, doc, login)
         
-        e = Event(doc=doc, by=login)
+        e = DocEvent(doc=doc, by=login)
         e.type = "requested_resurrect"
-        e.desc = "Resurrection was requested by %s" % login.get_name()
+        e.desc = "Resurrection was requested"
         e.save()
         
         return HttpResponseRedirect(doc.get_absolute_url())
@@ -682,7 +679,7 @@ def resurrectREDESIGN(request, name):
     if doc.state_id != "expired":
         raise Http404()
 
-    login = request.user.get_profile().email()
+    login = request.user.get_profile()
 
     if request.method == 'POST':
         save_document_in_history(doc)
@@ -691,9 +688,9 @@ def resurrectREDESIGN(request, name):
         if e and e.type == 'requested_resurrect':
             email_resurrection_completed(request, doc, requester=e.by)
             
-        e = Event(doc=doc, by=login)
+        e = DocEvent(doc=doc, by=login)
         e.type = "completed_resurrect"
-        e.desc = "Resurrection was completed by %s" % login.get_name()
+        e.desc = "Resurrection was completed"
         e.save()
         
         doc.state = DocStateName.objects.get(slug="active")
@@ -726,7 +723,7 @@ def add_comment(request, name):
         form = AddCommentForm(request.POST)
         if form.is_valid():
             c = form.cleaned_data['comment']
-            add_document_comment(request, doc, c, include_by=False)
+            add_document_comment(request, doc, c)
             email_owner(request, doc, doc.idinternal.job_owner, login,
                         "A new comment added by %s" % login)
             return HttpResponseRedirect(doc.idinternal.get_absolute_url())
@@ -746,20 +743,20 @@ def add_commentREDESIGN(request, name):
     if not doc.iesg_state:
         raise Http404()
 
-    login = request.user.get_profile().email()
+    login = request.user.get_profile()
 
     if request.method == 'POST':
         form = AddCommentForm(request.POST)
         if form.is_valid():
             c = form.cleaned_data['comment']
             
-            e = Event(doc=doc, by=login)
+            e = DocEvent(doc=doc, by=login)
             e.type = "added_comment"
             e.desc = c
             e.save()
 
             email_owner(request, doc, doc.ad, login,
-                        "A new comment added by %s" % login.get_name())
+                        "A new comment added by %s" % login.name)
             return HttpResponseRedirect(doc.get_absolute_url())
     else:
         form = AddCommentForm()

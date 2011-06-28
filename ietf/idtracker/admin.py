@@ -34,12 +34,14 @@ class ChairsHistoryAdmin(admin.ModelAdmin):
 admin.site.register(ChairsHistory, ChairsHistoryAdmin)
 
 class DocumentCommentAdmin(admin.ModelAdmin):
-    list_display=('document', 'date', 'time', 'comment_text')
+    ordering=['-date']
+    list_display=('pk', 'doc_id', 'date', 'time', 'comment_text')
 admin.site.register(DocumentComment, DocumentCommentAdmin)
 
 class EmailAddressAdmin(admin.ModelAdmin):
-    list_display=('person_or_org', 'address', 'type', 'priority')
+    list_display=('id', 'person_link', 'address', 'type', 'priority_link')
     search_fields=['address']
+    raw_id_fields=['person_or_org', ]
 admin.site.register(EmailAddress, EmailAddressAdmin)
 
 class GoalMilestoneAdmin(admin.ModelAdmin):
@@ -88,13 +90,19 @@ class IESGLoginAdmin(admin.ModelAdmin):
     ordering=['user_level', 'last_name']
     list_display=('login_name', 'first_name', 'last_name', 'user_level')
     raw_id_fields=['person']
-admin.site.register(IESGLogin, IESGLoginAdmin)
+if not settings.USE_DB_REDESIGN_PROXY_CLASSES:
+    admin.site.register(IESGLogin, IESGLoginAdmin)
 
 class IETFWGAdmin(admin.ModelAdmin):
-    list_display=('group_acronym', 'group_type', 'status', 'area_acronym', 'start_date', 'concluded_date')
+    list_display=('group_acronym', 'group_type', 'status', 'area_acronym', 'start_date', 'concluded_date', 'chairs_link')
     search_fields=['group_acronym__acronym', 'group_acronym__name']
     list_filter=['status', 'group_type']
-admin.site.register(IETFWG, IETFWGAdmin)
+if not settings.USE_DB_REDESIGN_PROXY_CLASSES:
+    admin.site.register(IETFWG, IETFWGAdmin)
+
+class WGChairAdmin(admin.ModelAdmin):
+    list_display = ('person_link', 'group_link')
+admin.site.register(WGChair, WGChairAdmin)
 
 class IRTFAdmin(admin.ModelAdmin):
     pass
@@ -109,6 +117,7 @@ if not settings.USE_DB_REDESIGN_PROXY_CLASSES:
     admin.site.register(InternetDraft, InternetDraftAdmin)
 
 class PersonOrOrgInfoAdmin(admin.ModelAdmin):
+    list_display = ['person_or_org_tag', 'last_name', 'first_name', ]
     fieldsets=((None, {'fields': (('first_name', 'middle_initial', 'last_name'), ('name_suffix', 'modified_by'))}), ('Obsolete Info', {'fields': ('record_type', 'created_by', 'address_type'), 'classes': 'collapse'}))
     search_fields=['first_name', 'last_name']
 admin.site.register(PersonOrOrgInfo, PersonOrOrgInfoAdmin)
@@ -121,7 +130,8 @@ class RfcAdmin(admin.ModelAdmin):
     fieldsets=((None, {'fields': ('rfc_number', 'title', 'group_acronym', 'area_acronym', 'status', 'comments', 'last_modified_date')}), ('Metadata', {'fields': (('online_version', 'txt_page_count'), ('fyi_number', 'std_number')), 'classes': 'collapse'}), ('Standards Track Dates', {'fields': ('rfc_published_date', ('proposed_date', 'draft_date'), ('standard_date', 'historic_date')), 'classes': 'collapse'}), ('Last Call / Ballot Info', {'fields': ('intended_status', ('lc_sent_date', 'lc_expiration_date'), ('b_sent_date', 'b_approve_date')), 'classes': 'collapse'}))
     list_display=['rfc_number', 'title']
     search_fields=['title']
-admin.site.register(Rfc, RfcAdmin)
+if not settings.USE_DB_REDESIGN_PROXY_CLASSES:
+    admin.site.register(Rfc, RfcAdmin)
 
 class RfcIntendedStatusAdmin(admin.ModelAdmin):
     pass

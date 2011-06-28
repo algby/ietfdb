@@ -1,6 +1,7 @@
 from redesign.doc.models import *
 from redesign.person.models import Email 
 from redesign.proxy_utils import TranslatingManager
+from redesign.name.proxy import *
 
 from django.conf import settings
 
@@ -9,11 +10,15 @@ import glob, os
 
 class InternetDraft(Document):
     objects = TranslatingManager(dict(filename="name",
-                                      id_document_tag="id",
+                                      filename__contains="name__contains",
+                                      id_document_tag="pk",
                                       status=lambda v: ("state", { 1: 'active', 2: 'expired', 3: 'rfc', 4: 'auth-rm', 5: 'repl', 6: 'ietf-rm'}[v]),
                                       job_owner="ad",
                                       rfc_number=lambda v: ("docalias__name", "rfc%s" % v),
-                                      ))
+                                      cur_state="iesg_state__order",
+                                      idinternal__primary_flag=None,
+                                      idinternal__cur_state__state="iesg_state__name",
+                                      ), always_filter=dict(type="draft"))
 
     DAYS_TO_EXPIRE=185
 
@@ -32,7 +37,7 @@ class InternetDraft(Document):
     @property
     def group(self):
         from group.proxy import Acronym as AcronymProxy
-        g = super(self.__class__, self).group
+        g = super(InternetDraft, self).group
         return AcronymProxy(g) if g else None
     #filename = models.CharField(max_length=255, unique=True)
     @property
@@ -71,7 +76,7 @@ class InternetDraft(Document):
     #start_date = models.DateField()
     @property
     def start_date(self):
-        e = NewRevisionEvent.objects.filter(doc=self).order_by("time")[:1]
+        e = NewRevisionDocEvent.objects.filter(doc=self).order_by("time")[:1]
         return e[0].time.date() if e else None
     #expiration_date = models.DateField()
     @property
@@ -84,8 +89,7 @@ class InternetDraft(Document):
     #status = models.ForeignKey(IDStatus)
     @property
     def status(self):
-        from redesign.name.proxy import IDStatus
-        return IDStatus(self.state) if self.state else None
+        return IDStatus().from_object(self.state) if self.state else None
 
     @property
     def status_id(self):
@@ -107,8 +111,8 @@ class InternetDraft(Document):
     #lc_expiration_date = models.DateField(null=True, blank=True)
     @property
     def lc_expiration_date(self):
-        e = self.latest_event(LastCallEvent, type="sent_last_call")
-        return e.expires if e else None
+        e = self.latest_event(LastCallDocEvent, type="sent_last_call")
+        return e.expires.date() if e else None
         
     #b_sent_date = models.DateField(null=True, blank=True)
     @property
@@ -129,25 +133,26 @@ class InternetDraft(Document):
     #rfc_number = models.IntegerField(null=True, blank=True, db_index=True)
     @property
     def rfc_number(self):
-        # simple optimization for search results
-        if hasattr(self, "canonical_name"):
-            return int(self.canonical_name[3:]) if self.canonical_name.startswith('rfc') else None
-        
-        aliases = self.docalias_set.filter(name__startswith="rfc")
-        return int(aliases[0].name[3:]) if aliases else None
+        n = self.canonical_name()
+        return int(n[3:]) if n.startswith("rfc") else None
         
     #comments = models.TextField(blank=True) # unused
-        
+
     #last_modified_date = models.DateField()
     @property
     def last_modified_date(self):
-        return self.time
+        return self.time.date()
         
     #replaced_by = models.ForeignKey('self', db_column='replaced_by', blank=True, null=True, related_name='replaces_set')
     @property
     def replaced_by(self):
         r = InternetDraft.objects.filter(relateddocument__target__document=self, relateddocument__relationship="replaces")
         return r[0] if r else None
+
+    @property
+    def replaced_by_id(self):
+        r = self.replaced_by
+        return r.id_document_tag if r else None
         
     #replaces = FKAsOneToOne('replaces', reverse=True)
     @property
@@ -194,7 +199,9 @@ class InternetDraft(Document):
         if not hasattr(self, "_process_end"):
             self.calc_process_start_end()
         return self._process_end
-    
+
+    #shepherd = BrokenForeignKey('PersonOrOrgInfo', null=True, blank=True, null_values=(0, )) # same name
+
     #idinternal = FKAsOneToOne('idinternal', reverse=True, query=models.Q(rfc_flag = 0))
     @property
     def idinternal(self):
@@ -215,9 +222,13 @@ class InternetDraft(Document):
     def displayname(self):
         return self.name
     def file_tag(self):
-        return "<%s-%s.txt>" % (self.name, self.revision_display())
+        return "<%s>" % self.filename_with_rev()
+    def filename_with_rev(self):
+        return "%s-%s.txt" % (self.filename, self.revision_display())
     def group_acronym(self):
-	return self.group.acronym
+	return super(Document, self).group.acronym
+    def group_ml_archive(self):
+	return self.group.list_archive
     def idstate(self):
 	return self.docstate()
     def revision_display(self):
@@ -272,6 +283,10 @@ class InternetDraft(Document):
     @property
     def draft(self):
         return self
+
+    @property
+    def draft_id(self):
+        return self.name
         
     #rfc_flag = models.IntegerField(null=True)
     @property
@@ -300,31 +315,32 @@ class InternetDraft(Document):
     #token_name = models.CharField(blank=True, max_length=25)
     @property
     def token_name(self):
-        return self.ad.get_name()
+        return self.ad.name
 
     #token_email = models.CharField(blank=True, max_length=255)
     @property
     def token_email(self):
-        return self.ad.address
+        return self.ad.email_address()
     
     #note = models.TextField(blank=True) # same name
     
     #status_date = models.DateField(blank=True,null=True)
     @property
     def status_date(self):
-        e = self.latest_event(StatusDateEvent, type="changed_status_date")
+        e = self.latest_event(StatusDateDocEvent, type="changed_status_date")
         return e.date if e else None
 
     #email_display = models.CharField(blank=True, max_length=50) # unused
     #agenda = models.IntegerField(null=True, blank=True)
     @property
     def agenda(self):
-        return bool(self.latest_event(type="scheduled_for_telechat"))
+        e = self.latest_event(TelechatDocEvent, type="scheduled_for_telechat")
+        return bool(e and e.telechat_date)
     
     #cur_state = models.ForeignKey(IDState, db_column='cur_state', related_name='docs')
     @property
     def cur_state(self):
-        return IDState().from_old_object(self.iesg_state)
+        return IDState().from_object(self.iesg_state) if self.iesg_state else None
     
     @property
     def cur_state_id(self):
@@ -334,7 +350,7 @@ class InternetDraft(Document):
     @property
     def prev_state(self):
         ds = self.dochistory_set.exclude(iesg_state=self.iesg_state).order_by('-time')[:1]
-        return IDState().from_old_object(ds[0].iesg_state) if ds else None
+        return IDState().from_object(ds[0].iesg_state) if ds else None
     
     #assigned_to = models.CharField(blank=True, max_length=25) # unused
 
@@ -343,13 +359,13 @@ class InternetDraft(Document):
     def mark_by(self):
         e = self.latest_event()
         from person.proxy import IESGLogin as IESGLoginProxy
-        return IESGLoginProxy(e.by) if e else None
+        return IESGLoginProxy().from_object(e.by) if e else None
 
     # job_owner = models.ForeignKey(IESGLogin, db_column='job_owner', related_name='documents')
     @property
     def job_owner(self):
         from person.proxy import IESGLogin as IESGLoginProxy
-        return IESGLoginProxy(self.ad) if self.ad else None
+        return IESGLoginProxy().from_object(self.ad) if self.ad else None
     
     #event_date = models.DateField(null=True)
     @property
@@ -360,11 +376,17 @@ class InternetDraft(Document):
     #area_acronym = models.ForeignKey(Area)
     @property
     def area_acronym(self):
-        if self.group:
-            return self.group.parent
+        from group.proxy import Area
+        g = super(InternetDraft, self).group # be careful with group which is proxied
+        if g and g.type_id != "individ":
+            return Area().from_object(g.parent)
         elif self.ad:
             # return area for AD
-            return ad.role_set.get(type="ad", group__state="active").group
+            try:
+                area = Group.objects.get(role__name="ad", role__email=self.ad, state="active")
+                return Area().from_object(area)
+            except Group.DoesNotExist:
+                return None
         else:
             return None
         
@@ -372,7 +394,7 @@ class InternetDraft(Document):
     @property
     def cur_sub_state(self):
         s = self.tags.filter(slug__in=['extpty', 'need-rev', 'ad-f-up', 'point'])
-        return IDSubState().from_old_object(s[0]) if s else None
+        return IDSubState().from_object(s[0]) if s else None
     @property
     def cur_sub_state_id(self):
         s = self.cur_sub_state
@@ -383,7 +405,7 @@ class InternetDraft(Document):
     def prev_sub_state(self):
         ds = self.dochistory_set.all().order_by('-time')[:1]
         substates = ds[0].tags.filter(slug__in=['extpty', 'need-rev', 'ad-f-up', 'point']) if ds else None
-        return IDSubState().from_old_object(substates[0]) if substates else None
+        return IDSubState().from_object(substates[0]) if substates else None
     @property
     def prev_sub_state_id(self):
         s = self.prev_sub_state
@@ -392,13 +414,13 @@ class InternetDraft(Document):
     #returning_item = models.IntegerField(null=True, blank=True)
     @property
     def returning_item(self):
-        e = self.latest_event(TelechatEvent, type="scheduled_for_telechat")
+        e = self.latest_event(TelechatDocEvent, type="scheduled_for_telechat")
         return e.returning_item if e else None
 
     #telechat_date = models.DateField(null=True, blank=True)
     @property
     def telechat_date(self):
-        e = self.latest_event(TelechatEvent, type="scheduled_for_telechat")
+        e = self.latest_event(TelechatDocEvent, type="scheduled_for_telechat")
         return e.telechat_date if e else None
 
     #via_rfc_editor = models.IntegerField(null=True, blank=True)
@@ -434,7 +456,7 @@ class InternetDraft(Document):
     def resurrect_requested_by(self):
         e = self.latest_event(type__in=("requested_resurrect", "completed_resurrect"))
         from person.proxy import IESGLogin as IESGLoginProxy
-        return IESGLoginProxy(e.by) if e and e.type == "requested_resurrect" else None
+        return IESGLoginProxy().from_object(e.by) if e and e.type == "requested_resurrect" else None
     
     #approved_in_minute = models.IntegerField(null=True, blank=True)
     @property
@@ -443,7 +465,7 @@ class InternetDraft(Document):
         
     
     def get_absolute_url(self):
-	if self.rfc_flag:
+	if self.rfc_flag and self.rfc_number:
 	    return "/doc/rfc%d/" % self.rfc_number
 	else:
 	    return "/doc/%s/" % self.name
@@ -454,6 +476,9 @@ class InternetDraft(Document):
     def comments(self):
         return DocumentComment.objects.filter(doc=self).order_by('-time')
 
+    def public_comments(self):
+        return self.comments()
+    
     def ballot_set(self):
         return [self]
     def ballot_primary(self):
@@ -492,7 +517,7 @@ class InternetDraft(Document):
     def an_sent_by(self):
         e = self.latest_event(type="iesg_approved")
         from person.proxy import IESGLogin as IESGLoginProxy
-        return IESGLoginProxy(e.by) if e else None
+        return IESGLoginProxy().from_object(e.by) if e else None
 
     #defer = models.BooleanField()
     @property
@@ -505,7 +530,7 @@ class InternetDraft(Document):
     def defer_by(self):
         e = self.latest_event(type="changed_document", desc__startswith="State changed to <b>IESG Evaluation - Defer</b>")
         from person.proxy import IESGLogin as IESGLoginProxy
-        return IESGLoginProxy(e.by) if e else None
+        return IESGLoginProxy().from_object(e.by) if e else None
     
     #defer_date = models.DateField(null=True, blank=True)
     @property
@@ -516,19 +541,19 @@ class InternetDraft(Document):
     #approval_text = models.TextField(blank=True)
     @property
     def approval_text(self):
-        e = self.latest_event(WriteupEvent, type="changed_ballot_approval_text")
+        e = self.latest_event(WriteupDocEvent, type="changed_ballot_approval_text")
         return e.text if e else ""
     
     #last_call_text = models.TextField(blank=True)
     @property
     def last_call_text(self):
-        e = self.latest_event(WriteupEvent, type="changed_last_call_text")
+        e = self.latest_event(WriteupDocEvent, type="changed_last_call_text")
         return e.text if e else ""
     
     #ballot_writeup = models.TextField(blank=True)
     @property
     def ballot_writeup(self):
-        e = self.latest_event(WriteupEvent, type="changed_ballot_writeup_text")
+        e = self.latest_event(WriteupDocEvent, type="changed_ballot_writeup_text")
         return e.text if e else ""
 
     #ballot_issued = models.IntegerField(null=True, blank=True)
@@ -541,15 +566,14 @@ class InternetDraft(Document):
     #     return remarks
     def active_positions(self):
         """Returns a list of dicts, with AD and Position tuples"""
-        active_ads = Email.objects.filter(role__name="ad", role__group__state="active")
-
+        active_ads = Person.objects.filter(email__role__name="ad", email__role__group__state="active")
 	res = []
         def add(ad, pos):
             from person.proxy import IESGLogin as IESGLoginProxy
-            res.append(dict(ad=IESGLoginProxy(ad), pos=Position().from_old_object(pos) if pos else None))
+            res.append(dict(ad=IESGLoginProxy().from_object(ad), pos=Position().from_object(pos) if pos else None))
         
         found = set()
-	for pos in BallotPositionEvent.objects.filter(doc=self, type="changed_ballot_position", ad__in=active_ads).select_related('ad').order_by("-time", "-id"):
+	for pos in BallotPositionDocEvent.objects.filter(doc=self, type="changed_ballot_position", ad__in=active_ads).select_related('ad').order_by("-time", "-id"):
             if pos.ad not in found:
                 found.add(pos.ad)
                 add(pos.ad, pos)
@@ -557,7 +581,9 @@ class InternetDraft(Document):
         for ad in active_ads:
             if ad not in found:
                 add(ad, None)
-                
+
+        res.sort(key=lambda x: x["ad"].last_name)
+        
 	return res
     
     def needed(self, standardsTrack=True):
@@ -622,7 +648,7 @@ class InternetDraft(Document):
             e = self.published_rfc
         else:
             e = self.latest_event(type="published_rfc")
-        return e.time.date() if e else None
+        return e.time.date() if e else datetime.date(1990,1,1)
     
     #current_status = models.CharField(max_length=50,null=True)
     @property
@@ -683,12 +709,34 @@ class InternetDraft(Document):
     def file_formats(self):
         return self.get_file_type_matches_from(os.path.join(settings.RFC_PATH, "rfc" + str(self.rfc_number) + ".*")).replace(".", "").replace("txt", "ascii")
 
+    @property
+    def positions(self):
+	res = []
+        found = set()
+	for pos in Position.objects.filter(doc=self, type="changed_ballot_position").select_related('ad').order_by("-time", "-id"):
+            if pos.ad not in found:
+                found.add(pos.ad)
+                res.append(pos)
+
+        class Dummy:
+            def all(self):
+                return self.res
+        d = Dummy()
+        d.res = res
+        return d
+
+    @property
+    def ipr(self):
+        from ipr.models import IprDraftProxy
+        return IprDraftProxy.objects.filter(doc_alias__document=self.pk)
+    
     class Meta:
         proxy = True
 
 IDInternal = InternetDraft
 BallotInfo = InternetDraft
 RfcIndex = InternetDraft
+Rfc = InternetDraft
 
 
 class IDAuthor(DocumentAuthor):
@@ -712,8 +760,9 @@ class IDAuthor(DocumentAuthor):
     class Meta:
         proxy = True
 
-class DocumentComment(Event):
+class DocumentComment(DocEvent):
     objects = TranslatingManager(dict(comment_text="desc",
+                                      date="time"
                                       ))
 
     BALLOT_DISCUSS = 1
@@ -734,28 +783,39 @@ class DocumentComment(Event):
         return self.time.date()
     #time = models.CharField(db_column='comment_time', max_length=20, default=lambda: datetime.datetime.now().strftime("%H:%M:%S"))
     #version = models.CharField(blank=True, max_length=3)
+    @property
+    def version(self):
+        e = self.doc.latest_event(NewRevisionDocEvent, type="new_revision", time__lte=self.time)
+        return e.rev if e else "0"
     #comment_text = models.TextField(blank=True)
+    @property
+    def comment_text(self):
+        return self.desc
     #created_by = BrokenForeignKey(IESGLogin, db_column='created_by', null=True, null_values=(0, 999))
     #result_state = BrokenForeignKey(IDState, db_column='result_state', null=True, related_name="comments_leading_to_state", null_values=(0, 99))
     #origin_state = models.ForeignKey(IDState, db_column='origin_state', null=True, related_name="comments_coming_from_state")
     #ballot = models.IntegerField(null=True, choices=BALLOT_CHOICES)
     def get_absolute_url(self):
-        return "/idtracker/%d/comment/%d/" % (self.doc.name, self.id)
+        return "/doc/%s/" % self.doc.name
     def get_author(self):
-        return unicode(self.by)
+        return self.by.name
     def get_username(self):
         return unicode(self.by)
     def get_fullname(self):
-        return unicode(self.by)
+        return self.by.name
     def datetime(self):
         return self.time
+    def doc_id(self):
+        return self.doc_id
+    def __str__(self):
+        return "\"%s...\" by %s" % (self.comment_text[:20], self.get_author())
     
     class Meta:
         proxy = True
 
 
-class Position(BallotPositionEvent):
-    def from_old_object(self, base):
+class Position(BallotPositionDocEvent):
+    def from_object(self, base):
         for f in base._meta.fields:
             if not f.name in ('discuss',): # don't overwrite properties
                 setattr(self, f.name, getattr(base, f.name))
@@ -800,94 +860,40 @@ class Position(BallotPositionEvent):
             return 'X'
         else:
             return ' '
-    class Meta:
-        proxy = True
-
-class IDState(IesgDocStateName):
-    PUBLICATION_REQUESTED = 10
-    LAST_CALL_REQUESTED = 15
-    IN_LAST_CALL = 16
-    WAITING_FOR_WRITEUP = 18
-    WAITING_FOR_AD_GO_AHEAD = 19
-    IESG_EVALUATION = 20
-    IESG_EVALUATION_DEFER = 21
-    APPROVED_ANNOUNCEMENT_SENT = 30
-    AD_WATCHING = 42
-    DEAD = 99
-    DO_NOT_PUBLISH_STATES = (33, 34)
-    
-    def from_old_object(self, base):
-        for f in base._meta.fields:
-            setattr(self, f.name, getattr(base, f.name))
-        return self
-                
-    #document_state_id = models.AutoField(primary_key=True)
-    @property
-    def document_state_id(self):
-        return self.order
-        
-    #state = models.CharField(max_length=50, db_column='document_state_val')
-    @property
-    def state(self):
-        return self.name
-    
-    #equiv_group_flag = models.IntegerField(null=True, blank=True) # unused
-    #description = models.TextField(blank=True, db_column='document_desc')
-    @property
-    def description(self):
-        return self.desc
-
-    @property
-    def nextstate(self):
-        # simulate related queryset
-        from name.models import get_next_iesg_states
-        return IDState.objects.filter(pk__in=[x.pk for x in get_next_iesg_states(self)])
-    
-    @property
-    def next_state(self):
-        # simulate IDNextState
-        return self
-
-    def __str__(self):
-        return self.state
-
-    @staticmethod
-    def choices():
-	return [(state.slug, state.name) for state in IDState.objects.all()]
+    def name(self):
+        return self.pos.name if self.pos else "No Record"
     
     class Meta:
         proxy = True
-        
 
-class IDSubStateManager(models.Manager):
-    def all(self):
-        return self.filter(slug__in=['extpty', 'need-rev', 'ad-f-up', 'point'])
-        
-class IDSubState(DocInfoTagName):
-    objects = IDSubStateManager()
-    
-    def from_old_object(self, base):
-        for f in base._meta.fields:
-            setattr(self, f.name, getattr(base, f.name))
-        return self
-                 
-    #sub_state_id = models.AutoField(primary_key=True)
-    @property
-    def sub_state_id(self):
-        return self.order
-    
-    #sub_state = models.CharField(max_length=55, db_column='sub_state_val')
-    @property
-    def sub_state(self):
-        return self.name
-    
-    #description = models.TextField(blank=True, db_column='sub_state_desc')
-    @property
-    def description(self):
-        return self.desc
-    
+class DraftLikeDocAlias(DocAlias):
+    # this class is mostly useful for the IPR part
+
     def __str__(self):
-        return self.sub_state
+        return str(unicode(self))
+    
+    def __unicode__(self):
+        if self.name.startswith("rfc"):
+            return "RFC%04d" % int(self.name[3:])
+        else:
+            return self.name
+
+    @property
+    def id_document_tag(self):
+        return self.name
+        
+    @property
+    def title(self):
+        return self.document.title
+
+    @property
+    def filename(self):
+        return self.name
+
+    @property
+    def ipr(self):
+        from ipr.models import IprDraftProxy
+        return IprDraftProxy.objects.filter(doc_alias=self.pk)
     
     class Meta:
         proxy = True

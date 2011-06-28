@@ -32,10 +32,14 @@
 
 from ietf.idtracker.models import InternetDraft, IDInternal, BallotInfo, IESGDiscuss, IESGLogin, DocumentComment, Acronym
 from ietf.idrfc.models import RfcEditorQueue
+from ietf.ipr.models import IprRfc, IprDraft, IprDetail
+
 import re
 from datetime import date
 from django.utils import simplejson as json
 from django.db.models import Q
+from django.db import models
+from django.core.urlresolvers import reverse
 from django.conf import settings
 import types
 
@@ -157,10 +161,25 @@ class IdWrapper:
         
         a = self.group_acronym()
         if a:
-            return "WG <%s>" % a
+            return "<a href='/wg/%s/'>%s WG</a>" % (a, a)
 
         return ""
+    submission.allow_tags = True
         
+    def search_archive(self):
+
+        if self._idinternal and self._idinternal.via_rfc_editor:
+            return "www.ietf.org/mail-archive/web/"
+
+        if self._draft.group_id == Acronym.INDIVIDUAL_SUBMITTER:
+            return "www.ietf.org/mail-archive/web/"
+        
+        a = self._draft.group_ml_archive()
+        if a:
+            return a
+
+        return ""
+
     def file_types(self):
         return self._draft.file_type.split(",")
 
@@ -192,11 +211,11 @@ class IdWrapper:
 
     def friendly_state(self):
         if self.draft_status == "RFC":
-            return "<a href=\"/doc/rfc%d/\">RFC %d</a>" % (self.rfc_number, self.rfc_number)
+            return "<a href=\"%s\">RFC %d</a>" % (reverse('doc_view', args=['rfc%d' % self.rfc_number]), self.rfc_number)
         elif self.draft_status == "Replaced":
             rs = self.replaced_by()
             if rs:
-                return "Replaced by <a href=\"/doc/%s/\">%s</a>" % (rs[0],rs[0])
+                return "Replaced by <a href=\"%s\">%s</a>" % (reverse('doc_view', args=[rs[0]]),rs[0], ) 
             else:
                 return "Replaced"
         elif self.draft_status == "Active":
@@ -213,6 +232,8 @@ class IdWrapper:
             else:
                 return "I-D Exists"
         else:
+            if self.in_ietf_process() and self.ietf_process.main_state == "Dead":
+                return self.draft_status+" (IESG: "+self.ietf_process.state+")"
             # Expired/Withdrawn by Submitter/IETF
             return self.draft_status
 
@@ -360,8 +381,9 @@ class RfcWrapper:
             # TODO: get AD name of the draft
             return None
 
+    @models.permalink
     def get_absolute_url(self):
-        return "/doc/rfc%d/" % (self.rfc_number,)
+        return ('ietf.idrfc.views_doc.document_main', ['rfc%s' % (str(self.rfc_number))])
     def displayname_with_link(self):
         return '<a href="%s">RFC %d</a>' % (self.get_absolute_url(), self.rfc_number)
 
@@ -436,7 +458,7 @@ class IetfProcessData:
     def state_date(self):
         try:
             if settings.USE_DB_REDESIGN_PROXY_CLASSES:
-                return self._idinternal.event_set.filter(
+                return self._idinternal.docevent_set.filter(
                     Q(desc__istartswith="Draft Added by ")|
                     Q(desc__istartswith="Draft Added in state ")|
                     Q(desc__istartswith="Draft added in state ")|
@@ -517,11 +539,23 @@ class IetfProcessData:
 class IdRfcWrapper:
     rfc = None
     id = None
+    iprCount = None
+    iprUrl = None
 
     def __init__(self, id, rfc):
         self.id = id
         self.rfc = rfc
-
+        if id:
+            iprs = IprDraft.objects.filter(document=self.id.tracker_id, ipr__status__in=[1,3])
+            self.iprUrl = "/ipr/search?option=document_search&id_document_tag=" + str(self.id.tracker_id)
+        elif rfc:
+            iprs = IprRfc.objects.filter(document=self.rfc.rfc_number, ipr__status__in=[1,3]) 
+            self.iprUrl = "/ipr/search?option=rfc_search&rfc_search=" + str(self.rfc.rfc_number)
+        else:
+            raise ValueError("Construction with null id and rfc")
+        # iprs is a list of docs which contain IPR
+        self.iprCount = len(iprs)
+ 
     def title(self):
         if self.rfc:
             return self.rfc.title
@@ -576,13 +610,47 @@ class IdRfcWrapper:
             return 'Active Internet-Draft'
         else:
             return 'Old Internet-Draft'
-    def view_sort_key(self):
-        if self.rfc:
-            return "2%04d" % self.rfc.rfc_number
-        elif self.id.draft_status == "Active":
-            return "1"+self.id.draft_name
+
+    def view_sort_key(self, sort_by=None):
+        if sort_by is None:
+            if self.rfc:
+                return "2%04d" % self.rfc.rfc_number
+            elif self.id.draft_status == "Active":
+                return "1"+self.id.draft_name
+            else:
+                return "3"+self.id.draft_name
         else:
-            return "3"+self.id.draft_name
+            if self.rfc:
+                sort_key = "2"
+            elif self.id.draft_status == "Active":
+                sort_key = "1"
+            else:
+                sort_key = "3"
+
+            # Depending on what we're sorting on, we may
+            # need to do some conversion.
+            if sort_by == "title":
+                sort_key += self.title()
+            elif sort_by == "date":
+                sort_key = sort_key + str(self.publication_date())
+            elif sort_by == "status":
+                if self.rfc:
+                    sort_key += "%04d" % self.rfc.rfc_number
+                else:
+                    sort_key += self.id.draft_status
+            elif sort_by == "ipr":
+                sort_key += self.iprUrl
+            elif sort_by == "ad":
+                return self.view_sort_key_byad()
+            else:
+                # sort default or unknown sort value, revert to default
+                if self.rfc:
+                    sort_key += "%04d" % self.rfc.rfc_number
+                else:
+                    sort_key += self.id.draft_name
+            
+            return sort_key
+            
     def view_sort_key_byad(self):
         if self.rfc:
             return "2%04d" % self.rfc.rfc_number
@@ -641,16 +709,16 @@ class BallotWrapper:
             self.old_init()
             return
 
-        from redesign.person.models import Email
-        active_ads = Email.objects.filter(role__name="ad", role__group__state="active")
+        from redesign.person.models import Person
+        active_ads = Person.objects.filter(email__role__name="ad", email__role__group__state="active").distinct()
         
         positions = []
         seen = {}
 
-        from doc.models import BallotPositionEvent
-	for pos in BallotPositionEvent.objects.filter(doc=self.ballot, type="changed_ballot_position", time__gte=self.ballot.process_start, time__lte=self.ballot.process_end).select_related('ad').order_by("-time", '-id'):
+        from doc.models import BallotPositionDocEvent
+	for pos in BallotPositionDocEvent.objects.filter(doc=self.ballot, type="changed_ballot_position", time__gte=self.ballot.process_start, time__lte=self.ballot.process_end).select_related('ad').order_by("-time", '-id'):
             if pos.ad not in seen:
-                p = dict(ad_name=pos.ad.get_name(),
+                p = dict(ad_name=pos.ad.name,
                          ad_username=pos.ad.pk, # ought to rename this in doc_ballot_list
                          position=pos.pos.name,
                          is_old_ad=pos.ad not in active_ads,
@@ -684,7 +752,7 @@ class BallotWrapper:
         if self.ballot_active:
             for ad in active_ads:
                 if ad not in seen:
-                    d = dict(ad_name=ad.get_name(),
+                    d = dict(ad_name=ad.name,
                              ad_username=ad.pk,
                              position="No Record",
                              )
@@ -813,6 +881,8 @@ def create_position_object(ballot, position, all_comments):
              position=p)
     if not position.ad.is_current_ad():
         r['is_old_ad'] = True
+    else:
+        r['is_old_ad'] = False
         
     was = [v for k,v in positions.iteritems() if position.__dict__[k] < 0]
     if len(was) > 0:

@@ -15,15 +15,19 @@ from django.conf import settings
 from ietf.utils.mail import send_mail_text, send_mail_preformatted
 from ietf.ietfauth.decorators import group_required
 from ietf.idtracker.templatetags.ietf_filters import in_group
+from ietf.ietfauth.decorators import has_role
 from ietf.idtracker.models import *
 from ietf.iesg.models import *
 from ietf.ipr.models import IprDetail
+from ietf.ipr.search import iprs_from_docs
 from ietf.idrfc.mails import *
 from ietf.idrfc.utils import *
 from ietf.idrfc.lastcall import request_last_call
+from ietf.idrfc.idrfc_wrapper import BallotWrapper
 
-from doc.models import Document, Event, BallotPositionEvent, LastCallEvent, save_document_in_history
+from doc.models import Document, DocEvent, BallotPositionDocEvent, LastCallDocEvent, save_document_in_history
 from name.models import BallotPositionName, IesgDocStateName
+
 
 BALLOT_CHOICES = (("yes", "Yes"),
                   ("noobj", "No Objection"),
@@ -59,6 +63,13 @@ class EditPositionForm(forms.Form):
     discuss_text = forms.CharField(required=False, widget=forms.Textarea)
     comment_text = forms.CharField(required=False, widget=forms.Textarea)
     return_to_url = forms.CharField(required=False, widget=forms.HiddenInput)
+    def clean_discuss_text(self):
+       entered_discuss = self.cleaned_data["discuss_text"]
+       entered_pos = self.cleaned_data["position"]
+       if entered_pos == "discuss" and not entered_discuss:
+         print "Raising discuss ",entered_pos," ",entered_discuss
+         raise forms.ValidationError("You must enter a non-empty discuss")
+       return entered_discuss
 
 @group_required('Area_Director','Secretariat')
 def edit_position(request, name):
@@ -163,7 +174,13 @@ def edit_position(request, name):
                     qstr += "&ad=%s" % request.GET.get('ad')
                 return HttpResponseRedirect(urlreverse("doc_send_ballot_comment", kwargs=dict(name=doc.filename)) + qstr)
             else:
-                return HttpResponseRedirect(return_to_url)
+              if request.POST.get("Defer"):
+                  return HttpResponseRedirect(urlreverse("doc_defer_ballot", kwargs=dict(name=doc)))
+              else:
+                  if request.POST.get("Undefer"):
+                      return HttpResponseRedirect(urlreverse("doc_undefer_ballot", kwargs=dict(name=doc)))
+                  else:
+                      return HttpResponseRedirect(return_to_url)
     else:
         initial = {}
         if pos:
@@ -188,6 +205,7 @@ def edit_position(request, name):
                                    comment=comment,
                                    ad=ad,
                                    return_to_url=return_to_url,
+                                   ballot=BallotWrapper(doc.idinternal)
                                    ),
                               context_instance=RequestContext(request))
 
@@ -197,6 +215,13 @@ class EditPositionFormREDESIGN(forms.Form):
     comment = forms.CharField(required=False, widget=forms.Textarea)
     return_to_url = forms.CharField(required=False, widget=forms.HiddenInput)
 
+    def clean_discuss(self):
+       entered_discuss = self.cleaned_data["discuss"]
+       entered_pos = self.cleaned_data["position"]
+       if entered_pos.slug == "discuss" and not entered_discuss:
+           raise forms.ValidationError("You must enter a non-empty discuss")
+       return entered_discuss
+
 @group_required('Area_Director','Secretariat')
 def edit_positionREDESIGN(request, name):
     """Vote and edit discuss and comment on Internet Draft as Area Director."""
@@ -205,7 +230,7 @@ def edit_positionREDESIGN(request, name):
     if not doc.iesg_state or not started_process:
         raise Http404()
 
-    ad = login = request.user.get_profile().email()
+    ad = login = request.user.get_profile()
 
     if 'HTTP_REFERER' in request.META:
         return_to_url = request.META['HTTP_REFERER']
@@ -213,13 +238,14 @@ def edit_positionREDESIGN(request, name):
         return_to_url = doc.get_absolute_url()
 
     # if we're in the Secretariat, we can select an AD to act as stand-in for
-    if not in_group(request.user, "Area_Director"):
+    if not has_role(request.user, "Area Director"):
         ad_id = request.GET.get('ad')
         if not ad_id:
             raise Http404()
-        ad = get_object_or_404(Email, pk=ad_id)
+        from person.models import Person
+        ad = get_object_or_404(Person, pk=ad_id)
 
-    old_pos = doc.latest_event(BallotPositionEvent, type="changed_ballot_position", ad=ad, time__gte=started_process.time)
+    old_pos = doc.latest_event(BallotPositionDocEvent, type="changed_ballot_position", ad=ad, time__gte=started_process.time)
 
     if request.method == 'POST':
         form = EditPositionForm(request.POST)
@@ -231,7 +257,7 @@ def edit_positionREDESIGN(request, name):
             if clean['return_to_url']:
               return_to_url = clean['return_to_url']
 
-            pos = BallotPositionEvent(doc=doc, by=login)
+            pos = BallotPositionDocEvent(doc=doc, by=login)
             pos.type = "changed_ballot_position"
             pos.ad = ad
             pos.pos = clean["position"]
@@ -250,7 +276,7 @@ def edit_positionREDESIGN(request, name):
                 changes.append("comment")
 
                 if pos.comment:
-                    e = Event(doc=doc)
+                    e = DocEvent(doc=doc)
                     e.by = ad # otherwise we can't see who's saying it
                     e.type = "added_comment"
                     e.desc = "[Ballot comment]\n" + pos.comment
@@ -262,7 +288,7 @@ def edit_positionREDESIGN(request, name):
                 changes.append("discuss")
 
                 if pos.discuss:
-                    e = Event(doc=doc, by=login)
+                    e = DocEvent(doc=doc, by=login)
                     e.by = ad # otherwise we can't see who's saying it
                     e.type = "added_comment"
                     e.desc = "[Ballot discuss]\n" + pos.discuss
@@ -270,17 +296,17 @@ def edit_positionREDESIGN(request, name):
 
             # figure out a description
             if not old_pos and pos.pos.slug != "norecord":
-                pos.desc = u"[Ballot Position Update] New position, %s, has been recorded for %s" % (pos.pos.name, pos.ad.get_name())
+                pos.desc = u"[Ballot Position Update] New position, %s, has been recorded for %s" % (pos.pos.name, pos.ad.name)
             elif old_pos and pos.pos != old_pos.pos:
-                pos.desc = "[Ballot Position Update] Position for %s has been changed to %s from %s" % (pos.ad.get_name(), pos.pos.name, old_pos.pos.name)
+                pos.desc = "[Ballot Position Update] Position for %s has been changed to %s from %s" % (pos.ad.name, pos.pos.name, old_pos.pos.name)
 
             if not pos.desc and changes:
-                pos.desc = u"Ballot %s text updated for %s" % (u" and ".join(changes), ad.get_name())
+                pos.desc = u"Ballot %s text updated for %s" % (u" and ".join(changes), ad.name)
 
             # only add new event if we actually got a change
             if pos.desc:
                 if login != ad:
-                    pos.desc += u" by %s" % login.get_name()
+                    pos.desc += u" by %s" % login.name
 
                 pos.save()
 
@@ -290,12 +316,15 @@ def edit_positionREDESIGN(request, name):
                 doc.time = pos.time
                 doc.save()
 
-            # FIXME: test
             if request.POST.get("send_mail"):
                 qstr = "?return_to_url=%s" % return_to_url
                 if request.GET.get('ad'):
                     qstr += "&ad=%s" % request.GET.get('ad')
                 return HttpResponseRedirect(urlreverse("doc_send_ballot_comment", kwargs=dict(name=doc.name)) + qstr)
+            elif request.POST.get("Defer"):
+                return HttpResponseRedirect(urlreverse("doc_defer_ballot", kwargs=dict(name=doc)))
+            elif request.POST.get("Undefer"):
+                return HttpResponseRedirect(urlreverse("doc_undefer_ballot", kwargs=dict(name=doc)))
             else:
                 return HttpResponseRedirect(return_to_url)
     else:
@@ -309,7 +338,10 @@ def edit_positionREDESIGN(request, name):
             initial['return_to_url'] = return_to_url
             
         form = EditPositionForm(initial=initial)
-  
+
+    ballot_deferred = None
+    if doc.iesg_state_id == "defer":
+        ballot_deferred = doc.latest_event(type="changed_document", desc__startswith="State changed to <b>IESG Evaluation - Defer</b>")
 
     return render_to_response('idrfc/edit_positionREDESIGN.html',
                               dict(doc=doc,
@@ -317,6 +349,7 @@ def edit_positionREDESIGN(request, name):
                                    ad=ad,
                                    return_to_url=return_to_url,
                                    old_pos=old_pos,
+                                   ballot_deferred=ballot_deferred,
                                    ),
                               context_instance=RequestContext(request))
 
@@ -364,11 +397,17 @@ def send_ballot_comment(request, name):
         c = comment.text
         subj.append("COMMENT")
 
-    subject = "%s: %s" % (" and ".join(subj), doc.file_tag())
+
+    ad_name = str(ad)
+    ad_name_genitive = ad_name + "'" if ad_name.endswith('s') else ad_name + "'s"
+    subject = "%s %s on %s" % (ad_name_genitive, pos.name() if pos else "No Position" , doc.filename + '-' + doc.revision_display())
+    if subj:
+      subject += ": (with "+" and ".join(subj)+")"
+ 
     body = render_to_string("idrfc/ballot_comment_mail.txt",
-                            dict(discuss=d, comment=c))
+                            dict(discuss=d, comment=c, ad=ad, doc=doc, pos=pos))
     frm = u"%s <%s>" % ad.person.email()
-    to = "iesg@ietf.org"
+    to = "The IESG <iesg@ietf.org>"
         
     if request.method == 'POST':
         cc = [x.strip() for x in request.POST.get("cc", "").split(',') if x.strip()]
@@ -399,7 +438,7 @@ def send_ballot_commentREDESIGN(request, name):
     if not started_process:
         raise Http404()
 
-    ad = login = request.user.get_profile().email()
+    ad = login = request.user.get_profile()
 
     return_to_url = request.GET.get('return_to_url')
     if not return_to_url:
@@ -411,13 +450,14 @@ def send_ballot_commentREDESIGN(request, name):
         back_url = doc.get_absolute_url()
 
     # if we're in the Secretariat, we can select an AD to act as stand-in for
-    if not in_group(request.user, "Area_Director"):
+    if not has_role(request.user, "Area Director"):
         ad_id = request.GET.get('ad')
         if not ad_id:
             raise Http404()
-        ad = get_object_or_404(Email, pk=ad_id)
+        from person.models import Person
+        ad = get_object_or_404(Person, pk=ad_id)
 
-    pos = doc.latest_event(BallotPositionEvent, type="changed_ballot_position", ad=ad, time__gte=started_process.time)
+    pos = doc.latest_event(BallotPositionDocEvent, type="changed_ballot_position", ad=ad, time__gte=started_process.time)
     if not pos:
         raise Http404()
     
@@ -431,11 +471,18 @@ def send_ballot_commentREDESIGN(request, name):
         c = pos.comment
         subj.append("COMMENT")
 
-    subject = "%s: %s" % (" and ".join(subj), doc.file_tag())
+    ad_name = ad.get_name()
+    ad_name_genitive = ad_name + "'" if ad_name.endswith('s') else ad_name + "'s"
+    subject = "%s %s on %s" % (ad_name_genitive, pos.pos.name if pos.pos else "No Position", "%s-%02d" % (doc.name, doc.rev))
+    if subj:
+        subject += ": (with %s)" % " and ".join(subj)
+
+    doc.filename = doc.name # compatibility attributes
+    doc.revision_display = doc.rev
     body = render_to_string("idrfc/ballot_comment_mail.txt",
-                            dict(discuss=d, comment=c))
+                            dict(discuss=d, comment=c, ad=ad.get_name(), doc=doc, pos=pos.pos))
     frm = ad.formatted_email()
-    to = "iesg@ietf.org"
+    to = "The IESG <iesg@ietf.org>"
         
     if request.method == 'POST':
         cc = [x.strip() for x in request.POST.get("cc", "").split(',') if x.strip()]
@@ -503,7 +550,7 @@ def defer_ballotREDESIGN(request, name):
     if not doc.iesg_state:
         raise Http404()
 
-    login = request.user.get_profile().email()
+    login = request.user.get_profile()
     telechat_date = TelechatDates.objects.all()[0].date2
 
     if request.method == 'POST':
@@ -519,7 +566,7 @@ def defer_ballotREDESIGN(request, name):
         email_state_changed(request, doc, e.desc)
 
         update_telechat(request, doc, login, telechat_date)
-        email_ballot_deferred(request, doc, login.get_name(), telechat_date)
+        email_ballot_deferred(request, doc, login.name, telechat_date)
 
         return HttpResponseRedirect(doc.get_absolute_url())
   
@@ -540,12 +587,14 @@ def undefer_ballot(request, name):
         raise Http404()
 
     login = IESGLogin.objects.get(login_name=request.user.username)
+    telechat_date = TelechatDates.objects.all()[0].date1
     
     if request.method == 'POST':
         doc.idinternal.ballot.defer = False
         doc.idinternal.ballot.save()
         
         doc.idinternal.change_state(IDState.objects.get(document_state_id=IDState.IESG_EVALUATION), None)
+        doc.idinternal.telechat_date = telechat_date
         doc.idinternal.event_date = date.today()
         doc.idinternal.save()
 
@@ -555,6 +604,7 @@ def undefer_ballot(request, name):
   
     return render_to_response('idrfc/undefer_ballot.html',
                               dict(doc=doc,
+                                   telechat_date=telechat_date,
                                    back_url=doc.idinternal.get_absolute_url()),
                               context_instance=RequestContext(request))
 
@@ -565,7 +615,8 @@ def undefer_ballotREDESIGN(request, name):
     if not doc.iesg_state:
         raise Http404()
 
-    login = request.user.get_profile().email()
+    login = request.user.get_profile()
+    telechat_date = TelechatDates.objects.all()[0].date1
     
     if request.method == 'POST':
         save_document_in_history(doc)
@@ -583,6 +634,7 @@ def undefer_ballotREDESIGN(request, name):
   
     return render_to_response('idrfc/undefer_ballot.html',
                               dict(doc=doc,
+                                   telechat_date=telechat_date,
                                    back_url=doc.get_absolute_url()),
                               context_instance=RequestContext(request))
 
@@ -640,6 +692,7 @@ def lastcalltext(request, name):
             last_call_form = LastCallTextForm(request.POST, instance=ballot)
             if last_call_form.is_valid():
                 ballot.last_call_text = last_call_form.cleaned_data["last_call_text"]
+		add_document_comment(request, doc, "Last Call text changed")
                 ballot.save()
 
                 if "send_last_call_request" in request.POST:
@@ -702,9 +755,9 @@ def lastcalltextREDESIGN(request, name):
     if not doc.iesg_state:
         raise Http404()
 
-    login = request.user.get_profile().email()
+    login = request.user.get_profile()
 
-    existing = doc.latest_event(WriteupEvent, type="changed_last_call_text")
+    existing = doc.latest_event(WriteupDocEvent, type="changed_last_call_text")
     if not existing:
         existing = generate_last_call_announcement(request, doc)
         
@@ -716,10 +769,10 @@ def lastcalltextREDESIGN(request, name):
             if form.is_valid():
                 t = form.cleaned_data['last_call_text']
                 if t != existing.text:
-                    e = WriteupEvent(doc=doc, by=login)
+                    e = WriteupDocEvent(doc=doc, by=login)
                     e.by = login
                     e.type = "changed_last_call_text"
-                    e.desc = "Last call announcement was changed by %s" % login.get_name()
+                    e.desc = "Last call announcement was changed"
                     e.text = t
                     e.save()
                 
@@ -800,6 +853,7 @@ def ballot_writeupnotes(request, name):
             ballot_writeup_form = BallotWriteupForm(request.POST, instance=ballot)
             if ballot_writeup_form.is_valid():
                 ballot.ballot_writeup = ballot_writeup_form.cleaned_data["ballot_writeup"]
+		add_document_comment(request, doc, "Ballot writeup text changed")
                 ballot.save()
 
         if "issue_ballot" in request.POST:
@@ -867,11 +921,11 @@ def ballot_writeupnotesREDESIGN(request, name):
     if not started_process:
         raise Http404()
 
-    login = request.user.get_profile().email()
+    login = request.user.get_profile()
 
-    approval = doc.latest_event(WriteupEvent, type="changed_ballot_approval_text")
+    approval = doc.latest_event(WriteupDocEvent, type="changed_ballot_approval_text")
     
-    existing = doc.latest_event(WriteupEvent, type="changed_ballot_writeup_text")
+    existing = doc.latest_event(WriteupDocEvent, type="changed_ballot_writeup_text")
     if not existing:
         existing = generate_ballot_writeup(request, doc)
         
@@ -882,10 +936,10 @@ def ballot_writeupnotesREDESIGN(request, name):
         if form.is_valid():
             t = form.cleaned_data["ballot_writeup"]
             if t != existing.text:
-                e = WriteupEvent(doc=doc, by=login)
+                e = WriteupDocEvent(doc=doc, by=login)
                 e.by = login
                 e.type = "changed_ballot_writeup_text"
-                e.desc = "Ballot writeup was changed by %s" % login.get_name()
+                e.desc = "Ballot writeup was changed"
                 e.text = t
                 e.save()
 
@@ -893,13 +947,13 @@ def ballot_writeupnotesREDESIGN(request, name):
                 doc.save()
 
             if "issue_ballot" in request.POST and approval:
-                if in_group(request.user, "Area_Director") and not doc.latest_event(BallotPositionEvent, ad=login, time__gte=started_process.time):
+                if has_role(request.user, "Area Director") and not doc.latest_event(BallotPositionDocEvent, ad=login, time__gte=started_process.time):
                     # sending the ballot counts as a yes
-                    pos = BallotPositionEvent(doc=doc, by=login)
+                    pos = BallotPositionDocEvent(doc=doc, by=login)
                     pos.type = "changed_ballot_position"
                     pos.ad = login
                     pos.pos_id = "yes"
-                    pos.desc = "[Ballot Position Update] New position, %s, has been recorded for %s" % (pos.pos.name, pos.ad.get_name())
+                    pos.desc = "[Ballot Position Update] New position, %s, has been recorded for %s" % (pos.pos.name, pos.ad.name)
                     pos.save()
 
                 msg = generate_issue_ballot_mail(request, doc)
@@ -907,10 +961,10 @@ def ballot_writeupnotesREDESIGN(request, name):
 
                 email_iana(request, doc, 'drafts-eval@icann.org', msg)
 
-                e = Event(doc=doc, by=login)
+                e = DocEvent(doc=doc, by=login)
                 e.by = login
                 e.type = "sent_ballot_announcement"
-                e.desc = "Ballot has been issued by %s" % login.get_name()
+                e.desc = "Ballot has been issued by %s" % login.name
                 e.save()
 
                 doc.time = e.time
@@ -963,10 +1017,12 @@ def ballot_approvaltext(request, name):
             approval_text_form = ApprovalTextForm(request.POST, instance=ballot)            
             if approval_text_form.is_valid():
                 ballot.approval_text = approval_text_form.cleaned_data["approval_text"]
+		add_document_comment(request, doc, "Approval announcement text changed")
                 ballot.save()
                 
         if "regenerate_approval_text" in request.POST:
             ballot.approval_text = generate_approval_mail(request, doc)
+	    add_document_comment(request, doc, "Approval announcement text regenerated")
             ballot.save()
 
             # make sure form has the updated text
@@ -1002,9 +1058,9 @@ def ballot_approvaltextREDESIGN(request, name):
     if not doc.iesg_state:
         raise Http404()
 
-    login = request.user.get_profile().email()
+    login = request.user.get_profile()
 
-    existing = doc.latest_event(WriteupEvent, type="changed_ballot_approval_text")
+    existing = doc.latest_event(WriteupDocEvent, type="changed_ballot_approval_text")
     if not existing:
         existing = generate_approval_mail(request, doc)
 
@@ -1016,10 +1072,10 @@ def ballot_approvaltextREDESIGN(request, name):
             if form.is_valid():
                 t = form.cleaned_data['approval_text']
                 if t != existing.text:
-                    e = WriteupEvent(doc=doc, by=login)
+                    e = WriteupDocEvent(doc=doc, by=login)
                     e.by = login
                     e.type = "changed_ballot_approval_text"
-                    e.desc = "Ballot approval text was changed by %s" % login.get_name()
+                    e.desc = "Ballot approval text was changed"
                     e.text = t
                     e.save()
                 
@@ -1131,14 +1187,14 @@ def approve_ballotREDESIGN(request, name):
     if not doc.iesg_state:
         raise Http404()
 
-    login = request.user.get_profile().email()
+    login = request.user.get_profile()
 
-    e = doc.latest_event(WriteupEvent, type="changed_ballot_approval_text")
+    e = doc.latest_event(WriteupDocEvent, type="changed_ballot_approval_text")
     if not e:
         e = generate_approval_mail(request, doc)
     approval_text = e.text
 
-    e = doc.latest_event(WriteupEvent, type="changed_ballot_writeup_text")
+    e = doc.latest_event(WriteupDocEvent, type="changed_ballot_writeup_text")
     if not e:
         e = generate_ballot_writeup(request, doc)
     ballot_writeup = e.text
@@ -1164,7 +1220,7 @@ def approve_ballotREDESIGN(request, name):
         prev = doc.iesg_state
         doc.iesg_state = new_state
 
-        e = Event(doc=doc, by=login)
+        e = DocEvent(doc=doc, by=login)
         if action == "do_not_publish":
             e.type = "iesg_disapproved"
             e.desc = "Do Not Publish note has been sent to RFC Editor"
@@ -1220,22 +1276,6 @@ def make_last_call(request, name):
     
     announcement = ballot.last_call_text
 
-    # why cut -4 off filename? a better question is probably why these
-    # tables aren't linked together properly
-    filename_fragment = doc.filename[:-4]
-    iprs = IprDetail.objects.filter(title__icontains=filename_fragment)
-    if iprs:
-        links = [urlreverse("ietf.ipr.views.show", kwargs=dict(ipr_id=i.ipr_id))
-                 for i in iprs]
-        
-        announcement += "\n\n"
-        announcement += "The following IPR Declarations may be related to this I-D:"
-        announcement += "\n\n"
-        announcement += "\n".join(links)
-    else:
-        announcement += "\n\n"
-        announcement += "No IPR declarations were found that appear related to this I-D."
-    
     if request.method == 'POST':
         form = MakeLastCallForm(request.POST)
         if form.is_valid():
@@ -1281,29 +1321,13 @@ def make_last_callREDESIGN(request, name):
     if not doc.iesg_state:
         raise Http404()
 
-    login = request.user.get_profile().email()
+    login = request.user.get_profile()
 
-    e = doc.latest_event(WriteupEvent, type="changed_last_call_text")
+    e = doc.latest_event(WriteupDocEvent, type="changed_last_call_text")
     if not e:
         e = generate_last_call_announcement(request, doc)
     announcement = e.text
 
-    # why cut -4 off name? a better question is probably why these
-    # tables aren't linked together properly
-    filename_fragment = doc.name[:-4]
-    iprs = IprDetail.objects.filter(title__icontains=filename_fragment)
-    if iprs:
-        links = [urlreverse("ietf.ipr.views.show", kwargs=dict(ipr_id=i.ipr_id))
-                 for i in iprs]
-        
-        announcement += "\n\n"
-        announcement += "The following IPR Declarations may be related to this I-D:"
-        announcement += "\n\n"
-        announcement += "\n".join(links)
-    else:
-        announcement += "\n\n"
-        announcement += "No IPR declarations were found that appear related to this I-D."
-    
     if request.method == 'POST':
         form = MakeLastCallForm(request.POST)
         if form.is_valid():
@@ -1323,9 +1347,9 @@ def make_last_callREDESIGN(request, name):
             email_state_changed(request, doc, change_description)
             email_owner(request, doc, doc.ad, login, change_description)
             
-            e = LastCallEvent(doc=doc, by=login)
+            e = LastCallDocEvent(doc=doc, by=login)
             e.type = "sent_last_call"
-            e.desc = "Last call sent by %s" % login.get_name()
+            e.desc = "Last call sent by %s" % login.name
             if form.cleaned_data['last_call_sent_date'] != e.time.date():
                 e.time = datetime.datetime.combine(form.cleaned_data['last_call_sent_date'], e.time.time())
             e.expires = form.cleaned_data['last_call_expiration_date']

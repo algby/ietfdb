@@ -5,7 +5,7 @@ from django.core.urlresolvers import reverse as urlreverse
 
 from redesign.group.models import *
 from redesign.name.models import *
-from redesign.person.models import Email
+from redesign.person.models import Email, Person
 from redesign.util import admin_link
 
 import datetime
@@ -27,12 +27,12 @@ class DocumentInfo(models.Model):
     rfc_state = models.ForeignKey(RfcDocStateName, verbose_name="RFC state", blank=True, null=True)
     # Other
     abstract = models.TextField()
-    rev = models.CharField(verbose_name="revision", max_length=16)
+    rev = models.CharField(verbose_name="revision", max_length=16, blank=True)
     pages = models.IntegerField(blank=True, null=True)
     intended_std_level = models.ForeignKey(IntendedStdLevelName, blank=True, null=True)
     std_level = models.ForeignKey(StdLevelName, blank=True, null=True)
-    ad = models.ForeignKey(Email, verbose_name="area director", related_name='ad_%(class)s_set', blank=True, null=True)
-    shepherd = models.ForeignKey(Email, related_name='shepherd_%(class)s_set', blank=True, null=True)
+    ad = models.ForeignKey(Person, verbose_name="area director", related_name='ad_%(class)s_set', blank=True, null=True)
+    shepherd = models.ForeignKey(Person, related_name='shepherd_%(class)s_set', blank=True, null=True)
     notify = models.CharField(max_length=255, blank=True)
     external_url = models.URLField(blank=True) # Should be set for documents with type 'External'.
     note = models.TextField(blank=True)
@@ -42,26 +42,23 @@ class DocumentInfo(models.Model):
         abstract = True
     def author_list(self):
         return ", ".join(email.address for email in self.authors.all())
-    def latest_event(self, *args, **filter_args):
-        """Get latest event of optional Python type and with filter
-        arguments, e.g. d.latest_event(type="xyz") returns an Event
-        while d.latest_event(WriteupEvent, type="xyz") returns a
-        WriteupEvent event."""
-        model = args[0] if args else Event
-        e = model.objects.filter(doc=self).filter(**filter_args).order_by('-time', '-id')[:1]
-        return e[0] if e else None
 
 class RelatedDocument(models.Model):
     source = models.ForeignKey('Document')
     target = models.ForeignKey('DocAlias')
     relationship = models.ForeignKey(DocRelationshipName)
+    def action(self):
+        return self.relationship.name
+    def inverse_action():
+        infinitive = self.relationship.name[:-1]
+        return u"%sd by" % infinitive
     def __unicode__(self):
         return u"%s %s %s" % (self.source.name, self.relationship.name.lower(), self.target.name)
 
 class DocumentAuthor(models.Model):
     document = models.ForeignKey('Document')
-    author = models.ForeignKey(Email)
-    order = models.IntegerField()
+    author = models.ForeignKey(Email, help_text="Email address used by author for submission")
+    order = models.IntegerField(default=1)
 
     def __unicode__(self):
         return u"%s %s (%s)" % (self.document.name, self.author.get_name(), self.order)
@@ -86,8 +83,29 @@ class Document(DocumentInfo):
         return urlreverse('doc_view', kwargs={ 'name': name })
 
     def file_tag(self):
+        return u"<%s>" % self.filename_with_rev()
+
+    def filename_with_rev(self):
         # FIXME: compensate for tombstones?
-        return u"<%s-%s.txt>" % (self.name, self.rev)
+        return u"%s-%s.txt" % (self.name, self.rev)
+    
+    def latest_event(self, *args, **filter_args):
+        """Get latest event of optional Python type and with filter
+        arguments, e.g. d.latest_event(type="xyz") returns an DocEvent
+        while d.latest_event(WriteupDocEvent, type="xyz") returns a
+        WriteupDocEvent event."""
+        model = args[0] if args else DocEvent
+        e = model.objects.filter(doc=self).filter(**filter_args).order_by('-time', '-id')[:1]
+        return e[0] if e else None
+
+    def canonical_name(self):
+        name = self.name
+        if self.type_id == "draft" and self.state_id == "rfc":
+            a = self.docalias_set.filter(name__startswith="rfc")
+            if a:
+                name = a[0].name
+        return name
+            
 
 class RelatedDocHistory(models.Model):
     source = models.ForeignKey('DocHistory')
@@ -109,7 +127,7 @@ class DocHistoryAuthor(models.Model):
 
 class DocHistory(DocumentInfo):
     doc = models.ForeignKey(Document)   # ID of the Document this relates to
-    # Django won't let us define these in the base class, so we have
+    # Django 1.2 won't let us define these in the base class, so we have
     # to repeat them
     related = models.ManyToManyField('DocAlias', through=RelatedDocHistory, blank=True)
     authors = models.ManyToManyField(Email, through=DocHistoryAuthor, blank=True)
@@ -170,21 +188,6 @@ class DocAlias(models.Model):
         verbose_name_plural = "document aliases"
 
 
-# class Ballot(models.Model):             # A collection of ballot positions
-#     """A collection of ballot positions, and the actions taken during the
-#     lifetime of the ballot.
-
-#     The actual ballot positions are found by searching Messages for
-#     BallotPositions for this document between the dates indicated by
-#     self.initiated.time and (self.closed.time or now)
-#     """
-#     initiated = models.ForeignKey(Message,                        related_name="initiated_ballots")
-#     deferred  = models.ForeignKey(Message, null=True, blank=True, related_name="deferred_ballots")
-#     last_call = models.ForeignKey(Message, null=True, blank=True, related_name="lastcalled_ballots")
-#     closed    = models.ForeignKey(Message, null=True, blank=True, related_name="closed_ballots")
-#     announced = models.ForeignKey(Message, null=True, blank=True, related_name="announced_ballots")
-
-
 EVENT_TYPES = [
     # core events
     ("new_revision", "Added new revision"),
@@ -220,42 +223,42 @@ EVENT_TYPES = [
     ("approved_in_minute", "Approved in minute"),
     ]
 
-class Event(models.Model):
+class DocEvent(models.Model):
     """An occurrence for a document, used for tracking who, when and what."""
     time = models.DateTimeField(default=datetime.datetime.now, help_text="When the event happened")
     type = models.CharField(max_length=50, choices=EVENT_TYPES)
-    by = models.ForeignKey(Email, blank=True, null=True) # FIXME: make NOT NULL?
+    by = models.ForeignKey(Person)
     doc = models.ForeignKey('doc.Document')
     desc = models.TextField()
 
     def __unicode__(self):
-        return u"%s %s at %s" % (self.by.get_name(), self.get_type_display().lower(), self.time)
+        return u"%s %s at %s" % (self.by.name, self.get_type_display().lower(), self.time)
 
     class Meta:
-        ordering = ['-time', 'id']
+        ordering = ['-time', '-id']
         
-class NewRevisionEvent(Event):
+class NewRevisionDocEvent(DocEvent):
     rev = models.CharField(max_length=16)
    
 # IESG events
-class BallotPositionEvent(Event):
-    ad = models.ForeignKey(Email)
+class BallotPositionDocEvent(DocEvent):
+    ad = models.ForeignKey(Person)
     pos = models.ForeignKey(BallotPositionName, verbose_name="position", default="norecord")
     discuss = models.TextField(help_text="Discuss text if position is discuss", blank=True)
     discuss_time = models.DateTimeField(help_text="Time discuss text was written", blank=True, null=True)
     comment = models.TextField(help_text="Optional comment", blank=True)
     comment_time = models.DateTimeField(help_text="Time optional comment was written", blank=True, null=True)
     
-class WriteupEvent(Event):
+class WriteupDocEvent(DocEvent):
     text = models.TextField(blank=True)
 
-class StatusDateEvent(Event):
+class StatusDateDocEvent(DocEvent):
     date = models.DateField(blank=True, null=True)
 
-class LastCallEvent(Event):
+class LastCallDocEvent(DocEvent):
     expires = models.DateTimeField(blank=True, null=True)
     
-class TelechatEvent(Event):
+class TelechatDocEvent(DocEvent):
     telechat_date = models.DateField(blank=True, null=True)
     returning_item = models.BooleanField(default=False)
 

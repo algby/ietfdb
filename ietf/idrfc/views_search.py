@@ -30,7 +30,7 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-import re
+import re, datetime
 from django import forms
 from django.shortcuts import render_to_response
 from django.db.models import Q
@@ -43,8 +43,16 @@ from ietf.idrfc.idrfc_wrapper import IdWrapper,RfcWrapper,IdRfcWrapper
 from ietf.utils import normalize_draftname
 from django.conf import settings
 
+def addInputEvents(widget):
+    widget.attrs["oninput"] = 'inputEvent()'
+    widget.attrs["onpropertychange"] = 'propertyChange()'
+
+def addChangeEvent(widget):
+    widget.attrs["onchange"] = 'changeEvent()'
+
 class SearchForm(forms.Form):
     name = forms.CharField(required=False)
+    addInputEvents(name.widget)
     rfcs = forms.BooleanField(required=False,initial=True)
     activeDrafts = forms.BooleanField(required=False,initial=True)
     oldDrafts = forms.BooleanField(required=False,initial=False)
@@ -52,11 +60,17 @@ class SearchForm(forms.Form):
 
     by = forms.ChoiceField(choices=[(x,x) for x in ('author','group','area','ad','state')], required=False, initial='wg', label='Foobar')
     author = forms.CharField(required=False)
+    addInputEvents(author.widget)
     group = forms.CharField(required=False)
+    addInputEvents(group.widget)
     area = forms.ModelChoiceField(Area.active_areas(), empty_label="any area", required=False)
+    addChangeEvent(area.widget)
     ad = forms.ChoiceField(choices=(), required=False)
+    addChangeEvent(ad.widget)
     state = forms.ModelChoiceField(IDState.objects.all(), empty_label="any state", required=False)
+    addChangeEvent(state.widget)
     subState = forms.ChoiceField(choices=(), required=False)
+    addChangeEvent(subState.widget)
         
     def __init__(self, *args, **kwargs):
         super(SearchForm, self).__init__(*args, **kwargs)
@@ -85,7 +99,7 @@ class SearchForm(forms.Form):
             q['subState'] = ""
         return q
                                                                         
-def search_query(query_original):
+def search_query(query_original, sort_by=None):
     query = dict(query_original.items())
     drafts = query['activeDrafts'] or query['oldDrafts']
     if (not drafts) and (not query['rfcs']):
@@ -245,7 +259,8 @@ def search_query(query_original):
             if d or r:
                 doc = IdRfcWrapper(d, r)
                 results.append(doc)
-    results.sort(key=lambda obj: obj.view_sort_key())
+    results.sort(key=lambda obj: obj.view_sort_key(sort_by))
+    
     meta = {}
     if maxReached:
         meta['max'] = MAX
@@ -260,6 +275,7 @@ if settings.USE_DB_REDESIGN_PROXY_CLASSES:
 
     class SearchForm(forms.Form):
         name = forms.CharField(required=False)
+        addInputEvents(name.widget) # consider moving this to jQuery client-side instead
         rfcs = forms.BooleanField(required=False,initial=True)
         activeDrafts = forms.BooleanField(required=False,initial=True)
         oldDrafts = forms.BooleanField(required=False,initial=False)
@@ -267,27 +283,31 @@ if settings.USE_DB_REDESIGN_PROXY_CLASSES:
 
         by = forms.ChoiceField(choices=[(x,x) for x in ('author','group','area','ad','state')], required=False, initial='wg', label='Foobar')
         author = forms.CharField(required=False)
+        addInputEvents(author.widget)
         group = forms.CharField(required=False)
+        addInputEvents(group.widget)
         area = forms.ModelChoiceField(Group.objects.filter(type="area", state="active").order_by('name'), empty_label="any area", required=False)
+        addInputEvents(area.widget)
         ad = forms.ChoiceField(choices=(), required=False)
+        addInputEvents(ad.widget)
         state = forms.ModelChoiceField(IesgDocStateName.objects.all(), empty_label="any state", required=False)
+        addInputEvents(state.widget)
         subState = forms.ChoiceField(choices=(), required=False)
+        addInputEvents(subState.widget)
 
         def __init__(self, *args, **kwargs):
             super(SearchForm, self).__init__(*args, **kwargs)
             responsible = Document.objects.values_list('ad', flat=True).distinct()
-            active_ads = list(Email.objects.filter(role__name="ad",
-                                                   role__group__type="area",
-                                                   role__group__state="active")
-                              .select_related('person'))
-            inactive_ads = list(Email.objects.filter(pk__in=responsible)
-                                .exclude(pk__in=[x.pk for x in active_ads])
-                                .select_related('person'))
-            extract_last_name = lambda x: x.get_name().split(' ')[-1]
+            active_ads = list(Person.objects.filter(email__role__name="ad",
+                                                    email__role__group__type="area",
+                                                    email__role__group__state="active").distinct())
+            inactive_ads = list(Person.objects.filter(pk__in=responsible)
+                                .exclude(pk__in=[x.pk for x in active_ads]))
+            extract_last_name = lambda x: x.name_parts()[3]
             active_ads.sort(key=extract_last_name)
             inactive_ads.sort(key=extract_last_name)
 
-            self.fields['ad'].choices = c = [('', 'any AD')] + [(ad.pk, ad.get_name()) for ad in active_ads] + [('', '------------------')] + [(ad.pk, ad.get_name()) for ad in inactive_ads]
+            self.fields['ad'].choices = c = [('', 'any AD')] + [(ad.pk, ad.name) for ad in active_ads] + [('', '------------------')] + [(ad.pk, ad.name) for ad in inactive_ads]
             self.fields['subState'].choices = [('', 'any substate'), ('0', 'no substate')] + [(n.slug, n.name) for n in DocInfoTagName.objects.filter(slug__in=('point', 'ad-f-up', 'need-rev', 'extpty'))]
         def clean_name(self):
             value = self.cleaned_data.get('name','')
@@ -312,7 +332,7 @@ if settings.USE_DB_REDESIGN_PROXY_CLASSES:
                 q['subState'] = ""
             return q
 
-    def search_query(query_original):
+    def search_query(query_original, sort_by=None):
         query = dict(query_original.items())
         drafts = query['activeDrafts'] or query['oldDrafts']
         if (not drafts) and (not query['rfcs']):
@@ -362,8 +382,8 @@ if settings.USE_DB_REDESIGN_PROXY_CLASSES:
             docs = docs.filter(group__acronym=query["group"])
         elif by == "area":
             docs = docs.filter(Q(group__parent=query["area"]) |
-                               Q(ad__role__name="ad",
-                                 ad__role__group=query["area"]))
+                               Q(ad__email__role__name="ad",
+                                 ad__email__role__group=query["area"]))
         elif by == "ad":
             docs = docs.filter(ad=query["ad"])
         elif by == "state":
@@ -380,9 +400,10 @@ if settings.USE_DB_REDESIGN_PROXY_CLASSES:
         # canonical name
         for r in results:
             if r.pk in rfc_aliases:
-                r.canonical_name = rfc_aliases[r.pk]
+                # lambda weirdness works around lambda binding in local for loop scope 
+                r.canonical_name = (lambda x: lambda: x)(rfc_aliases[r.pk])
             else:
-                r.canonical_name = r.name
+                r.canonical_name = (lambda x: lambda: x)(r.name)
 
         result_map = dict((r.pk, r) for r in results)
 
@@ -395,7 +416,7 @@ if settings.USE_DB_REDESIGN_PROXY_CLASSES:
             for e in event_types:
                 setattr(result_map[d], e, None)
         
-        for e in Event.objects.filter(doc__in=rfc_aliases.keys(), type__in=event_types).order_by('-time'):
+        for e in DocEvent.objects.filter(doc__in=rfc_aliases.keys(), type__in=event_types).order_by('-time'):
             r = result_map[e.doc_id]
             if not getattr(r, e.type):
                 # sets e.g. r.published_date = e for use in proxy wrapper
@@ -421,13 +442,48 @@ if settings.USE_DB_REDESIGN_PROXY_CLASSES:
         
         # sort
         def sort_key(d):
-            if d.canonical_name.startswith('rfc'):
-                return (2, "%06d" % int(d.canonical_name[3:]))
-            elif d.state_id == "active":
-                return (1, d.canonical_name)
+            res = []
+            
+            canonical = d.canonical_name()
+            if canonical.startswith('rfc'):
+                rfc_num = int(canonical[3:])
             else:
-                return (3, d.canonical_name)
+                rfc_num = None
 
+            if rfc_num != None:
+                res.append(2)
+            elif d.state_id == "active":
+                res.append(1)
+            else:
+                res.append(3)
+
+            if sort_by == "title":
+                res.append(d.title)
+            elif sort_by == "date":
+                res.append(str(d.revision_date or datetime.date(1990, 1, 1)))
+            elif sort_by == "status":
+                if rfc_num != None:
+                    res.append(rfc_num)
+                else:
+                    res.append(d.state)
+            elif sort_by == "ipr":
+                res.append(d.name)
+            elif sort_by == "ad":
+                if rfc_num != None:
+                    res.append(rfc_num)
+                elif d.state_id == "active":
+                    if d.iesg_state:
+                        res.append(d.iesg_state.order)
+                    else:
+                        res.append(0)
+            else:
+                if rfc_num != None:
+                    res.append(rfc_num)
+                else:
+                    res.append(canonical)
+                    
+            return res
+                
         results.sort(key=sort_key)
 
         meta = {}
@@ -451,15 +507,49 @@ if settings.USE_DB_REDESIGN_PROXY_CLASSES:
         return (wrapped_results, meta)
     
 
+def generate_query_string(request, ignore_list):
+    """Recreates the parameter string from the given request, and
+       returns it as a string.
+       Any parameter names present in ignore_list shall not be put
+       in the result string.
+    """
+    params = []
+    for i in request.GET:
+        if not i in ignore_list:
+            params.append(i + "=" + request.GET[i])
+    return "?" + "&".join(params)
+
 def search_results(request):
     if len(request.REQUEST.items()) == 0:
         return search_main(request)
     form = SearchForm(dict(request.REQUEST.items()))
     if not form.is_valid():
         return HttpResponseBadRequest("form not valid?", mimetype="text/plain")
-    (results,meta) = search_query(form.cleaned_data)
+
+    sort_by = None
+    if "sortBy" in request.GET:
+        sort_by = request.GET["sortBy"]
+
+    (results,meta) = search_query(form.cleaned_data, sort_by)
+
     meta['searching'] = True
     meta['by'] = form.cleaned_data['by']
+    meta['rqps'] = generate_query_string(request, ['sortBy'])
+    # With a later Django we can do this from the template (incude with tag)
+    # Pass the headers and their sort key names
+    meta['hdrs'] = [{'htitle': 'Document', 'htype':'doc'},
+                    {'htitle': 'Title', 'htype':'title'},
+                    {'htitle': 'Date', 'htype':'date'},
+                    {'htitle': 'Status', 'htype':'status', 'colspan':'2'},
+                    {'htitle': 'IPR', 'htype':'ipr'},
+                    {'htitle': 'Ad', 'htype':'ad'}]
+
+    # Make sure we know which one is selected (for visibility later)
+    if sort_by:
+        for hdr in meta['hdrs']:
+            if hdr['htype'] == sort_by:
+                hdr['selected'] = True
+
     if 'ajax' in request.REQUEST and request.REQUEST['ajax']:
         return render_to_response('idrfc/search_results.html', {'docs':results, 'meta':meta}, context_instance=RequestContext(request))
     elif form.cleaned_data['lucky'] and len(results)==1:
@@ -479,16 +569,21 @@ def search_main(request):
 def by_ad(request, name):
     ad_id = None
     ad_name = None
-    for i in IESGLogin.objects.filter(user_level__in=[1,2]):
-        iname = str(i).lower().replace(' ','.')
-        if name == iname:
-            ad_id = i.id
-            ad_name = str(i)
-            break
+    if settings.USE_DB_REDESIGN_PROXY_CLASSES:
+        for p in Person.objects.filter(email__role__name__in=("ad", "ex-ad")):
+            if name == p.name.lower().replace(" ", "."):
+                ad_id = p.id
+                ad_name = p.name
+                break
+    else:
+        for i in IESGLogin.objects.filter(user_level__in=[1,2]):
+            iname = str(i).lower().replace(' ','.')
+            if name == iname:
+                ad_id = i.id
+                ad_name = str(i)
+                break
     if not ad_id:
         raise Http404
-    if settings.USE_DB_REDESIGN_PROXY_CLASSES:
-        ad_id = i.person.email()[1]
     form = SearchForm({'by':'ad','ad':ad_id,
                        'rfcs':'on', 'activeDrafts':'on', 'oldDrafts':'on'})
     if not form.is_valid():
@@ -502,7 +597,7 @@ def all(request):
     if settings.USE_DB_REDESIGN_PROXY_CLASSES:
         active = (dict(filename=n) for n in InternetDraft.objects.filter(state="active").order_by("name").values_list('name', flat=True))
         rfc1 = (dict(filename=d, rfc_number=int(n[3:])) for d, n in DocAlias.objects.filter(document__state="rfc", name__startswith="rfc").exclude(document__name__startswith="rfc").order_by("document__name").values_list('document__name','name').distinct())
-        rfc2 = (dict(rfc_number=r, draft=None) for r in sorted(int(n[3:]) for n in Document.objects.filter(name__startswith="rfc").values_list('name', flat=True)))
+        rfc2 = (dict(rfc_number=r, draft=None) for r in sorted(int(n[3:]) for n in Document.objects.filter(type="draft", name__startswith="rfc").values_list('name', flat=True)))
         dead = InternetDraft.objects.exclude(state__in=("active", "rfc")).select_related("state").order_by("name")
     else:
         active = InternetDraft.objects.all().filter(status=1).order_by("filename").values('filename')
@@ -517,3 +612,15 @@ def active(request):
     groups = IETFWG.objects.exclude(group_acronym=1027)
     individual = IETFWG.objects.get(group_acronym=1027)
     return render_to_response("idrfc/active.html", {'groups':groups,'individual':individual}, context_instance=RequestContext(request))
+
+def in_last_call(request):
+    
+    lcdocs = []
+
+    for p in InternetDraft.objects.all().filter(idinternal__primary_flag=1).filter(idinternal__cur_state__state='In Last Call'):
+      if (p.idinternal.rfc_flag):
+        lcdocs.append(IdRfcWrapper(None,RfcWrapper(p))) 
+      else:
+        lcdocs.append(IdRfcWrapper(IdWrapper(p),None))
+
+    return render_to_response("idrfc/in_last_call.html", {'lcdocs':lcdocs}, context_instance=RequestContext(request))

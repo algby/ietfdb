@@ -4,13 +4,13 @@ import datetime
 
 from django.conf import settings
 
-from ietf.idtracker.models import InternetDraft, DocumentComment, BallotInfo, IESGLogin
+from ietf.idtracker.models import InternetDraft, DocumentComment, BallotInfo
 from ietf.idrfc.mails import *
 from ietf.idrfc.utils import *
 
-from doc.models import Document, Event, LastCallEvent, WriteupEvent, save_document_in_history
+from doc.models import Document, DocEvent, LastCallDocEvent, WriteupDocEvent, save_document_in_history
 from name.models import IesgDocStateName
-from person.models import Email
+from person.models import Person
 
 def request_last_call(request, doc):
     try:
@@ -31,11 +31,11 @@ def request_last_callREDESIGN(request, doc):
     
     send_last_call_request(request, doc)
     
-    e = Event()
+    e = DocEvent()
     e.type = "requested_last_call"
-    e.by = request.user.get_profile().email()
+    e.by = request.user.get_profile()
     e.doc = doc
-    e.desc = "Last call was requested by %s" % e.by.get_name()
+    e.desc = "Last call was requested by %s" % e.by.name
     e.save()
 
 if settings.USE_DB_REDESIGN_PROXY_CLASSES:
@@ -48,7 +48,7 @@ def get_expired_last_calls():
 def get_expired_last_callsREDESIGN():
     today = datetime.date.today()
     for d in Document.objects.filter(iesg_state="lc"):
-        e = d.latest_event(LastCallEvent, type="sent_last_call")
+        e = d.latest_event(LastCallDocEvent, type="sent_last_call")
         if e and e.expires.date() <= today:
             yield d
 
@@ -73,7 +73,7 @@ def expire_last_call(doc):
 def expire_last_callREDESIGN(doc):
     state = IesgDocStateName.objects.get(slug="writeupw")
 
-    e = doc.latest_event(WriteupEvent, type="changed_ballot_writeup_text")
+    e = doc.latest_event(WriteupDocEvent, type="changed_ballot_writeup_text")
     if e and "What does this protocol do and why" not in e.text:
         # if it boiler-plate text has been removed, we assume the
         # write-up has been written
@@ -83,7 +83,7 @@ def expire_last_callREDESIGN(doc):
 
     prev = doc.iesg_state
     doc.iesg_state = state
-    e = log_state_changed(None, doc, Email.objects.get(address="(System)"), prev)
+    e = log_state_changed(None, doc, Person.objects.get(name="(System)"), prev)
                     
     doc.time = e.time
     doc.save()
