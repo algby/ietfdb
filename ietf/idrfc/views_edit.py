@@ -157,9 +157,10 @@ def dehtmlify_textarea_text(s):
 class EditInfoForm(forms.Form):
     intended_status = forms.ModelChoiceField(IDIntendedStatus.objects.all(), empty_label=None, required=True)
     status_date = forms.DateField(required=False, help_text="Format is YYYY-MM-DD")
-    area_acronym = forms.ModelChoiceField(Area.active_areas(), required=True, empty_label=None)
+    area_acronym = forms.ModelChoiceField(Area.active_areas(), required=True, empty_label='None Selected')
     via_rfc_editor = forms.BooleanField(required=False, label="Via IRTF or RFC Editor")
     job_owner = forms.ModelChoiceField(IESGLogin.objects.filter(user_level__in=(IESGLogin.AD_LEVEL, IESGLogin.INACTIVE_AD_LEVEL)).order_by('user_level', 'last_name'), label="Responsible AD", empty_label=None, required=True)
+    create_in_state = forms.ModelChoiceField(IDState.objects.filter(document_state_id__in=(IDState.PUBLICATION_REQUESTED, IDState.AD_WATCHING)), empty_label=None, required=True)
     state_change_notice_to = forms.CharField(max_length=255, label="Notice emails", help_text="Separate email addresses with commas", required=False)
     note = forms.CharField(widget=forms.Textarea, label="IESG note", required=False)
     telechat_date = forms.TypedChoiceField(coerce=lambda x: datetime.datetime.strptime(x, '%Y-%m-%d').date(), empty_value=None, required=False)
@@ -171,9 +172,9 @@ class EditInfoForm(forms.Form):
         super(self.__class__, self).__init__(*args, **kwargs)
 
         job_owners = IESGLogin.objects.in_bulk([t[0] for t in self.fields['job_owner'].choices])
+        choices = [("","None Selected"), ]
         if old_ads:
             # separate active ADs from inactive
-            choices = []
             separated = False
             for t in self.fields['job_owner'].choices:
                 if job_owners[t[0]].user_level != IESGLogin.AD_LEVEL and not separated:
@@ -183,9 +184,10 @@ class EditInfoForm(forms.Form):
             self.fields['job_owner'].choices = choices
         else:
             # remove old ones
-            self.fields['job_owner'].choices = filter(
-                lambda t: job_owners[t[0]].user_level == IESGLogin.AD_LEVEL,
-                self.fields['job_owner'].choices)
+            for t in self.fields['job_owner'].choices:
+               if job_owners[t[0]].user_level==IESGLogin.AD_LEVEL:
+                 choices.append(t)
+            self.fields['job_owner'].choices = choices
         
         # telechat choices
         dates = TelechatDates.objects.all()[0].dates()
@@ -199,9 +201,9 @@ class EditInfoForm(forms.Form):
 
         self.fields['telechat_date'].choices = choices
 
-        if kwargs['initial']['area_acronym'] == Acronym.INDIVIDUAL_SUBMITTER:
-            # default to "gen"
-            kwargs['initial']['area_acronym'] = 1008
+#        if kwargs['initial']['area_acronym'] == Acronym.INDIVIDUAL_SUBMITTER:
+#            # default to "gen"
+#            kwargs['initial']['area_acronym'] = 1008
         
         # returning item is rendered non-standard
         self.standard_fields = [x for x in self.visible_fields() if x.name not in ('returning_item',)]
@@ -284,6 +286,8 @@ def edit_info(request, name):
             r = form.cleaned_data
             entry = "%s has been changed to <b>%s</b> from <b>%s</b>"
             if new_document:
+                doc.idinternal.cur_state_id=r['create_in_state'].document_state_id
+                doc.idinternal.prev_state_id=r['create_in_state'].document_state_id
                 # Django barfs in the diff below because these fields
                 # can't be NULL
                 doc.idinternal.job_owner = r['job_owner']
@@ -379,6 +383,7 @@ class EditInfoFormREDESIGN(forms.Form):
     status_date = forms.DateField(required=False, help_text="Format is YYYY-MM-DD")
     via_rfc_editor = forms.BooleanField(required=False, label="Via IRTF or RFC Editor")
     ad = forms.ModelChoiceField(Person.objects.filter(email__role__name__in=("ad", "ex-ad")).order_by('email__role__name', 'name'), label="Responsible AD", empty_label=None, required=True)
+    create_in_state = forms.ModelChoiceField(IesgDocStateName.objects.filter(slug__in=("pub-req", "watching")), empty_label=None, required=True)
     notify = forms.CharField(max_length=255, label="Notice emails", help_text="Separate email addresses with commas", required=False)
     note = forms.CharField(widget=forms.Textarea, label="IESG note", required=False)
     telechat_date = forms.TypedChoiceField(coerce=lambda x: datetime.datetime.strptime(x, '%Y-%m-%d').date(), empty_value=None, required=False)
@@ -457,7 +462,7 @@ def edit_infoREDESIGN(request, name):
     login = request.user.get_profile()
 
     new_document = False
-    if not doc.iesg_state: # FIXME: should probably get this as argument to view
+    if not doc.iesg_state: # FIXME: should probably receive "new document" as argument to view instead of this
         new_document = True
         doc.iesg_state = IesgDocStateName.objects.get(slug="pub-req")
         doc.notify = get_initial_notify(doc)
@@ -478,6 +483,7 @@ def edit_infoREDESIGN(request, name):
                 # fix so Django doesn't barf in the diff below because these
                 # fields can't be NULL
                 doc.ad = r['ad']
+                doc.iesg_state = r['create_in_state']
                 
                 replaces = Document.objects.filter(docalias__relateddocument__source=doc, docalias__relateddocument__relationship="replaces")
                 if replaces:

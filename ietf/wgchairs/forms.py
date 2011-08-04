@@ -10,6 +10,7 @@ from ietf.wgchairs.accounts import get_person_for_user
 from ietf.ietfworkflows.constants import REQUIRED_STATES
 from ietf.ietfworkflows.utils import (get_default_workflow_for_wg, get_workflow_for_wg,
                                       update_tags, FOLLOWUP_TAG, get_state_by_name)
+from ietf.ietfworkflows.models import AnnotationTag, State
 from ietf.idtracker.models import PersonOrOrgInfo
 
 from workflows.models import Transition
@@ -36,7 +37,7 @@ class RelatedWGForm(forms.Form):
 
 class TagForm(RelatedWGForm):
 
-    tags = forms.ModelMultipleChoiceField(get_default_workflow_for_wg().annotation_tags.all(),
+    tags = forms.ModelMultipleChoiceField(AnnotationTag.objects.filter(wgworkflow__name='Default WG Workflow'),
                                           widget=forms.CheckboxSelectMultiple, required=False)
 
     def save(self):
@@ -49,7 +50,7 @@ class TagForm(RelatedWGForm):
 
 class StateForm(RelatedWGForm):
 
-    states = forms.ModelMultipleChoiceField(get_default_workflow_for_wg().states.all(),
+    states = forms.ModelMultipleChoiceField(State.objects.filter(wgworkflow__name='Default WG Workflow'),
                                             widget=forms.CheckboxSelectMultiple, required=False)
 
     def update_transitions(self, workflow):
@@ -94,7 +95,7 @@ class DeleteTransitionForm(RelatedWGForm):
 
 class TransitionForm(forms.ModelForm):
 
-    states = forms.ModelMultipleChoiceField(get_default_workflow_for_wg().states.all())
+    states = forms.ModelMultipleChoiceField(State.objects.filter(wgworkflow__name='Default WG Workflow'))
 
     class Meta:
         model = Transition
@@ -191,7 +192,7 @@ class AddDelegateForm(RelatedWGForm):
         return self.next_form
 
     def get_person(self, email):
-        persons = PersonOrOrgInfo.objects.filter(emailaddress__address=email, iesglogin__isnull=False).distinct()
+        persons = PersonOrOrgInfo.objects.filter(emailaddress__address=email).distinct()
         if not persons:
             raise PersonOrOrgInfo.DoesNotExist
         if len(persons) > 1:

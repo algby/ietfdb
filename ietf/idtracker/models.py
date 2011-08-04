@@ -274,7 +274,7 @@ class PersonOrOrgInfo(models.Model):
 	    return u"(Person #%s)" % self.person_or_org_tag
         return u"%s %s" % ( self.first_name or u"<nofirst>", self.last_name or u"<nolast>")
     def email(self, priority=1, type=None):
-	name = unicode(self)
+        name = unicode(self)
         email = ''
         addresses = self.emailaddress_set.filter(address__contains="@").order_by('priority')[:1]
         if addresses:
@@ -634,11 +634,28 @@ class IDInternal(models.Model):
         self.prev_state = self.cur_state
         self.cur_state = state
         self.prev_sub_state_id = self.cur_sub_state_id
-        self.cur_sub_state = sub_state
-        
+        self.cur_sub_state = sub_state        
     class Meta:
         db_table = 'id_internal'
 	verbose_name = 'IDTracker Draft'
+    def draft_link(self):
+        try:
+            if self.rfc_flag:
+                return '<a href="http://tools.ietf.org/html/rfc%s">rfc%s</a>' % (self.draft.pk, self.draft.pk)
+            else:
+                return '<a href="http://tools.ietf.org/html/%s">%s</a>' % (self.draft.filename, self.draft.filename)
+        except Exception:
+            return ""
+    draft_link.allow_tags = True
+    def tracker_link(self):
+        try:
+            if self.rfc_flag:
+                return '<a href="http://datatracker.ietf.org/doc/rfc%s">rfc%s</a>' % (self.draft.pk, self.draft.pk)
+            else:
+                return '<a href="http://datatracker.ietf.org/doc/%s">%s</a>' % (self.draft.filename, self.draft.filename)
+        except Exception:
+            return ""
+    tracker_link.allow_tags = True
 
 class DocumentComment(models.Model):
     BALLOT_DISCUSS = 1

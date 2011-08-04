@@ -57,7 +57,7 @@ admin.site.register(IDIntendedStatus, IDIntendedStatusAdmin)
 if not settings.USE_DB_REDESIGN_PROXY_CLASSES:
     class IDInternalAdmin(admin.ModelAdmin):
         ordering=['draft']
-        list_display=['draft', 'token_email', 'note']
+        list_display=['pk', 'rfc_flag', 'token_email', 'note', 'tracker_link', 'draft_link']
         search_fields=['draft__filename']
         raw_id_fields=['draft','ballot']
     admin.site.register(IDInternal, IDInternalAdmin)

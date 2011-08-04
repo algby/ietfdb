@@ -3,6 +3,7 @@
 from django.db import models
 from django.conf import settings
 from ietf.idtracker.models import Acronym, PersonOrOrgInfo, IRTF, AreaGroup, Area, IETFWG
+from ietf.utils.broken_foreign_key import BrokenForeignKey
 import datetime
 #from ietf.utils import log
 
@@ -188,7 +189,7 @@ class NonSessionRef(models.Model):
 
 class NonSession(models.Model):
     non_session_id = models.AutoField(primary_key=True)
-    day_id = models.IntegerField(blank=True, null=True)
+    day_id = models.IntegerField(blank=True, null=True) # NULL means all days
     non_session_ref = models.ForeignKey(NonSessionRef)
     meeting = models.ForeignKey(Meeting, db_column='meeting_num')
     time_desc = models.CharField(blank=True, max_length=75)
@@ -363,18 +364,18 @@ class WgMeetingSession(models.Model, ResolveAcronym):
     ts_status_id = models.IntegerField(null=True, blank=True)
     requested_date = models.DateField(null=True, blank=True)
     approved_date = models.DateField(null=True, blank=True)
-    requested_by = models.ForeignKey(PersonOrOrgInfo, db_column='requested_by')
+    requested_by = BrokenForeignKey(PersonOrOrgInfo, db_column='requested_by', null=True, null_values=(0, 888888))
     scheduled_date = models.DateField(null=True, blank=True)
     last_modified_date = models.DateField(null=True, blank=True)
     ad_comments = models.TextField(blank=True,null=True)
     sched_room_id1 = models.ForeignKey(MeetingRoom, db_column='sched_room_id1', null=True, blank=True, related_name='here1')
-    sched_time_id1 = models.ForeignKey(MeetingTime, db_column='sched_time_id1', null=True, blank=True, related_name='now1')
+    sched_time_id1 = BrokenForeignKey(MeetingTime, db_column='sched_time_id1', null=True, blank=True, related_name='now1')
     sched_date1 = models.DateField(null=True, blank=True)
     sched_room_id2 = models.ForeignKey(MeetingRoom, db_column='sched_room_id2', null=True, blank=True, related_name='here2')
-    sched_time_id2 = models.ForeignKey(MeetingTime, db_column='sched_time_id2', null=True, blank=True, related_name='now2')
+    sched_time_id2 = BrokenForeignKey(MeetingTime, db_column='sched_time_id2', null=True, blank=True, related_name='now2')
     sched_date2 = models.DateField(null=True, blank=True)
     sched_room_id3 = models.ForeignKey(MeetingRoom, db_column='sched_room_id3', null=True, blank=True, related_name='here3')
-    sched_time_id3 = models.ForeignKey(MeetingTime, db_column='sched_time_id3', null=True, blank=True, related_name='now3')
+    sched_time_id3 = BrokenForeignKey(MeetingTime, db_column='sched_time_id3', null=True, blank=True, related_name='now3')
     sched_date3 = models.DateField(null=True, blank=True)
     special_agenda_note = models.CharField(blank=True, max_length=255)
     combined_room_id1 = models.ForeignKey(MeetingRoom, db_column='combined_room_id1', null=True, blank=True, related_name='here4')
@@ -448,6 +449,15 @@ class WgMeetingSession(models.Model, ResolveAcronym):
             return True
         else:
             return False
+    def length_session1_desc (self):
+        mh = MeetingHour.objects.get(hour_id=self.length_session1)
+        return mh.hour_desc
+    def length_session2_desc (self):
+        mh = MeetingHour.objects.get(hour_id=self.length_session2)
+        return mh.hour_desc
+    def length_session3_desc (self):
+        mh = MeetingHour.objects.get(hour_id=self.length_session3)
+        return mh.hour_desc
     class Meta:
         db_table = 'wg_meeting_sessions'
         verbose_name = "WG meeting session"
@@ -565,6 +575,14 @@ class WgProceedingsActivities(models.Model, ResolveAcronym):
     class Meta:
         db_table = 'wg_proceedings_activities'
         verbose_name = "WG material upload"
+
+class MeetingHour(models.Model):
+    hour_id = models.IntegerField(primary_key=True)
+    hour_desc = models.CharField(max_length=60, blank=True)
+    def __unicode__(self):
+        return self.hour_desc
+    class Meta:
+        db_table = u'meeting_hours'
 
 # changes done by convert-096.py:changed maxlength to max_length
 # removed core
