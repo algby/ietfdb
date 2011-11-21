@@ -76,6 +76,7 @@ ADMIN_MEDIA_PREFIX = '/media/'
 
 AUTH_PROFILE_MODULE = 'ietfauth.IetfUserProfile'
 AUTHENTICATION_BACKENDS = ( "ietf.ietfauth.auth.IetfUserBackend", )
+
 SESSION_COOKIE_AGE = 43200 # 12 hours
 SESSION_EXPIRE_AT_BROWSER_CLOSE = True
 
@@ -217,7 +218,7 @@ IDSUBMIT_ANNOUNCE_LIST_EMAIL = 'i-d-announce@ietf.org'
 # Days from meeting to cut off dates on submit
 FIRST_CUTOFF_DAYS = 20
 SECOND_CUTOFF_DAYS = 13
-CUTOFF_HOUR = 17
+CUTOFF_HOUR = 24                        # midnight UTC
 
 IDSUBMIT_REPOSITORY_PATH = INTERNET_DRAFT_PATH
 IDSUBMIT_STAGING_PATH = '/a/www/www6s/staging/'
@@ -236,6 +237,11 @@ MAX_SAME_WG_DRAFT_SIZE = 450
 MAX_DAILY_SUBMISSION = 1000
 MAX_DAILY_SUBMISSION_SIZE = 2000
 # End of ID Submission Tool settings
+
+# Account settings
+DAYS_TO_EXPIRE_REGISTRATION_LINK = 3
+HTPASSWD_COMMAND = "/usr/bin/htpasswd2"
+HTPASSWD_FILE = "/www/htpasswd"
 
 # DB redesign
 USE_DB_REDESIGN_PROXY_CLASSES = True

@@ -28,40 +28,26 @@ class IesgGroupStateName(NameModel):
 class RoleName(NameModel):
     """AD, Chair"""
 class DocStreamName(NameModel):
-    """IETF, IAB, IRTF, Independent Submission, Legacy"""
-class DocStateName(NameModel):
-    """Active, Expired, RFC, Replaced, Withdrawn"""
+    """IETF, IAB, IRTF, ISE, Legacy"""
 class DocRelationshipName(NameModel):
     """Updates, Replaces, Obsoletes, Reviews, ... The relationship is
-    always recorded in one direction.
-    """
-class WgDocStateName(NameModel):
-    """Not, Candidate, Active, Parked, LastCall, WriteUp, Submitted,
-    Dead"""
-class IesgDocStateName(NameModel):
-    """Pub Request, Ad Eval, Expert Review, Last Call Requested, In
-    Last Call, Waiting for Writeup, Waiting for AD Go-Ahead, IESG
-    Evaluation, Deferred, Approved, Announcement Sent, Do Not Publish,
-    Ad is watching, Dead """
-class IanaDocStateName(NameModel):
-    """ """
-class RfcDocStateName(NameModel):
-    """Missref, Edit, RFC-Editor, Auth48, Auth, Published; ISR,
-    ISR-Auth, ISR-Timeout;"""
+    always recorded in one direction."""
 class DocTypeName(NameModel):
     """Draft, Agenda, Minutes, Charter, Discuss, Guideline, Email,
     Review, Issue, Wiki"""
-class DocInfoTagName(NameModel):
+class DocTagName(NameModel):
     """Waiting for Reference, IANA Coordination, Revised ID Needed,
-    External Party, AD Followup, Point Raised - Writeup Needed"""
+    External Party, AD Followup, Point Raised - Writeup Needed, ..."""
 class StdLevelName(NameModel):
     """Proposed Standard, Draft Standard, Standard, Experimental,
     Informational, Best Current Practice, Historic, ..."""
 class IntendedStdLevelName(NameModel):
     """Standards Track, Experimental, Informational, Best Current
     Practice, Historic, ..."""
+class DocReminderTypeName(NameModel):
+    "Stream state"
 class BallotPositionName(NameModel):
-    """ Yes, NoObjection, Abstain, Discuss, Recuse """
+    """ Yes, No Objection, Abstain, Discuss, Recuse """
 class MeetingTypeName(NameModel):
     """IETF, Interim"""
 class SessionStatusName(NameModel):
@@ -72,31 +58,3 @@ class ConstraintName(NameModel):
     """Conflict"""
 class LiaisonStatementPurposeName(NameModel):
     """For action, For comment, For information, In response, Other"""
-
-
-def get_next_iesg_states(iesg_state):
-    if not iesg_state:
-        return ()
-    
-    next = {
-        "pub-req": ("ad-eval", "watching", "dead"),
-        "ad-eval": ("watching", "lc-req", "review-e", "iesg-eva"),
-        "review-e": ("ad-eval", ),
-        "lc-req": ("lc", ),
-        "lc": ("writeupw", "goaheadw"),
-        "writeupw": ("goaheadw", ),
-        "goaheadw": ("iesg-eva", ),
-        "iesg-eva": ("nopubadw", "defer", "ann"),
-        "defer": ("iesg-eva", ),
-        "ann": ("approved", ),
-        "approved": ("rfcqueue", ),
-        "rfcqueue": ("pub", ),
-        "pub": ("dead", ),
-        "nopubadw": ("nopubanw", ),
-        "nopubanw": ("dead", ),
-        "watching": ("pub-req", ),
-        "dead": ("pub-req", ),
-    }
-
-    return IesgDocStateName.objects.filter(slug__in=next.get(iesg_state.slug, ()))
-    

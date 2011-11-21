@@ -11,22 +11,41 @@ from redesign.util import admin_link
 
 import datetime, os
 
+class StateType(models.Model):
+    slug = models.CharField(primary_key=True, max_length=30) # draft, draft_iesg, charter, ...
+    label = models.CharField(max_length=255) # State, IESG state, WG state, ...
+
+    def __unicode__(self):
+        return self.label
+
+class State(models.Model):
+    type = models.ForeignKey(StateType)
+    slug = models.SlugField()
+    name = models.CharField(max_length=255)
+    used = models.BooleanField(default=True)
+    desc = models.TextField(blank=True)
+    order = models.IntegerField(default=0)
+
+    next_states = models.ManyToManyField('State', related_name="previous_states")
+
+    def __unicode__(self):
+        return self.name
+    
+    class Meta:
+        ordering = ["type", "order"]
+
 class DocumentInfo(models.Model):
     """Any kind of document.  Draft, RFC, Charter, IPR Statement, Liaison Statement"""
     time = models.DateTimeField(default=datetime.datetime.now) # should probably have auto_now=True
-    # Document related
+
     type = models.ForeignKey(DocTypeName, blank=True, null=True) # Draft, Agenda, Minutes, Charter, Discuss, Guideline, Email, Review, Issue, Wiki, External ...
     title = models.CharField(max_length=255)
-    # State
-    state = models.ForeignKey(DocStateName, blank=True, null=True) # Active/Expired/RFC/Replaced/Withdrawn
-    tags = models.ManyToManyField(DocInfoTagName, blank=True, null=True) # Revised ID Needed, ExternalParty, AD Followup, ...
+
+    states = models.ManyToManyField(State, blank=True) # plain state (Active/Expired/...), IESG state, stream state
+    tags = models.ManyToManyField(DocTagName, blank=True, null=True) # Revised ID Needed, ExternalParty, AD Followup, ...
     stream = models.ForeignKey(DocStreamName, blank=True, null=True) # IETF, IAB, IRTF, Independent Submission
     group = models.ForeignKey(Group, blank=True, null=True) # WG, RG, IAB, IESG, Edu, Tools
-    wg_state  = models.ForeignKey(WgDocStateName, verbose_name="WG state", blank=True, null=True) # Not/Candidate/Active/Parked/LastCall/WriteUp/Submitted/Dead
-    iesg_state = models.ForeignKey(IesgDocStateName, verbose_name="IESG state", blank=True, null=True) # 
-    iana_state = models.ForeignKey(IanaDocStateName, verbose_name="IANA state", blank=True, null=True)
-    rfc_state = models.ForeignKey(RfcDocStateName, verbose_name="RFC state", blank=True, null=True)
-    # Other
+
     abstract = models.TextField()
     rev = models.CharField(verbose_name="revision", max_length=16, blank=True)
     pages = models.IntegerField(blank=True, null=True)
@@ -48,11 +67,47 @@ class DocumentInfo(models.Model):
             return os.path.join(settings.AGENDA_PATH, meeting, self.type_id) + "/"
         else:
             raise NotImplemented
-    
-    class Meta:
-        abstract = True
+
+    def set_state(self, state):
+        """Switch state type implicit in state to state. This just
+        sets the state, doesn't log the change."""
+        already_set = self.states.filter(type=state.type)
+        others = [s for s in already_set if s != state]
+        if others:
+            self.states.remove(*others)
+        if state not in already_set:
+            self.states.add(state)
+
+    def unset_state(self, state_type):
+        """Unset state of type so no state of that type is any longer set."""
+        self.states.remove(*self.states.filter(type=state_type))
+
+    def get_state(self, state_type=None):
+        """Get state of type, or default state for document type if not specified."""
+        if state_type == None:
+            state_type = self.type_id
+
+        try:
+            return self.states.get(type=state_type)
+        except State.DoesNotExist:
+            return None
+
+    def get_state_slug(self, state_type=None):
+        """Get state of type, or default if not specified, returning
+        the slug of the state or None. This frees the caller of having
+        to check against None before accessing the slug for a
+        comparison."""
+        s = self.get_state(state_type)
+        if s:
+            return s.slug
+        else:
+            return None
+
     def author_list(self):
         return ", ".join(email.address for email in self.authors.all())
+
+    class Meta:
+        abstract = True
 
 class RelatedDocument(models.Model):
     source = models.ForeignKey('Document')
@@ -87,7 +142,7 @@ class Document(DocumentInfo):
 
     def get_absolute_url(self):
         name = self.name
-        if self.state == "rfc":
+        if self.get_state_slug() == "rfc":
             aliases = self.docalias_set.filter(name__startswith="rfc")
             if aliases:
                 name = aliases[0].name
@@ -111,12 +166,11 @@ class Document(DocumentInfo):
 
     def canonical_name(self):
         name = self.name
-        if self.type_id == "draft" and self.state_id == "rfc":
+        if self.type_id == "draft" and self.get_state() == "rfc":
             a = self.docalias_set.filter(name__startswith="rfc")
             if a:
                 name = a[0].name
         return name
-            
 
 class RelatedDocHistory(models.Model):
     source = models.ForeignKey('DocHistory')
@@ -144,6 +198,9 @@ class DocHistory(DocumentInfo):
     authors = models.ManyToManyField(Email, through=DocHistoryAuthor, blank=True)
     def __unicode__(self):
         return unicode(self.doc.name)
+    class Meta:
+        verbose_name = "document history"
+        verbose_name_plural = "document histories"
 
 def save_document_in_history(doc):
     def get_model_fields_as_dict(obj):
@@ -198,20 +255,31 @@ class DocAlias(models.Model):
         verbose_name = "document alias"
         verbose_name_plural = "document aliases"
 
+class DocReminder(models.Model):
+    event = models.ForeignKey('DocEvent')
+    type = models.ForeignKey(DocReminderTypeName)
+    due = models.DateTimeField()
+    active = models.BooleanField(default=True)
+
 
 EVENT_TYPES = [
     # core events
     ("new_revision", "Added new revision"),
     ("changed_document", "Changed document metadata"),
-    
-    # misc document events
     ("added_comment", "Added comment"),
+
+    ("uploaded", "Uploaded document"),
+    ("deleted", "Deleted document"),
+
+    # misc draft/RFC events
+    ("changed_stream", "Changed document stream"),
     ("expired_document", "Expired document"),
     ("requested_resurrect", "Requested resurrect"),
     ("completed_resurrect", "Completed resurrect"),
     ("published_rfc", "Published RFC"),
 
     # WG events
+    ("changed_group", "Changed group"),
     ("changed_protocol_writeup", "Changed protocol writeup"),
     
     # IESG events

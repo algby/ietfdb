@@ -35,7 +35,8 @@ admin.site.register(ChairsHistory, ChairsHistoryAdmin)
 
 class DocumentCommentAdmin(admin.ModelAdmin):
     ordering=['-date']
-    list_display=('pk', 'doc_id', 'date', 'time', 'comment_text')
+    list_display=('doc_name', 'doc_id', 'date', 'time', 'comment_text')
+    search_fields = ['document__draft__filename', ]
 admin.site.register(DocumentComment, DocumentCommentAdmin)
 
 class EmailAddressAdmin(admin.ModelAdmin):
@@ -146,7 +147,8 @@ class RfcStatusAdmin(admin.ModelAdmin):
 admin.site.register(RfcStatus, RfcStatusAdmin)
 
 class RoleAdmin(admin.ModelAdmin):
-    pass
+    list_display = ["person", "role_name", ]
+    raw_id_fields = ["person", ]
 admin.site.register(Role, RoleAdmin)
 
 class WGStatusAdmin(admin.ModelAdmin):

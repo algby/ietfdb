@@ -139,16 +139,20 @@ returned to the submitter.
 {% endif %}
 
 <table class="metadata-table">
-<tr><th>Document</th><td>
-   {% ifequal status.status_value "Posted" %}<a href="http://www.ietf.org/id/{{ detail.filename }}-{{detail.revision}}.txt">{{ detail.filename }}</a>{% else %}{{ detail.filename }}{% endifequal %}
-   <br/><a class="twopages_trigger" href="#">[View first two pages]</a>
-{% show_submission_files detail %}
-</td></tr>
+<tr{% if validation.warnings.document_files %} class="warning"{% endif %}>
+   <th>Document</th>
+   <td>
+      {% ifequal status.status_value "Posted" %}<a href="http://www.ietf.org/id/{{ detail.filename }}-{{detail.revision}}.txt">{{ detail.filename }}</a>{% else %}{{ detail.filename }}{% endifequal %}
+      <br/><a class="twopages_trigger" href="#">[View first two pages]</a>
+      {% show_submission_files detail %}
+      <div class="warn_message">{{ validation.warnings.document_files|safe }}</div>
+   </td>
+</tr>
 <tr{% if validation.warnings.revision %} class="warning"{% endif %}><th>Revision</th><td>{{ detail.revision }}<div class="warn_message">{{ validation.warnings.revision }}{% if validation.warnings.revision %}<br /><a class="twopages_trigger" href="#">[View error]</a>{% endif %}</div></td></tr>
 <tr{% if validation.warnings.group %} class="warning"{% endif %}><th>WG</th><td>{{ validation.wg|default:"Individual Submission" }}<div class="warn_message">{{ validation.warnings.group }}</div></td></tr>
 <tr{% if validation.warnings.creation_date %} class="warning"{% endif %}><th>Document date</th><td>{{ detail.creation_date }}<div class="warn_message">{{ validation.warnings.creation_date }}</div></td></tr>
 <tr><th>Submission date</th><td>{{ detail.submission_date }}</td></tr>
-<tr><th>Title</th><td>{{ detail.id_document_name }}</td></tr>
+<tr{% if validation.warnings.title %} class="warning"{% endif %}><th>Title</th><td>{{ detail.id_document_name|default:"" }}<div class="warn_message">{{ validation.warnings.title }}</div></td></tr>
 <tr{% if validation.warnings.authors %} class="warning"{% endif %}><th colspan="2">Author information</th></tr>
 {% if validation.warnings.authors %}
 <tr class="warning"><td colspan="2"><div class="warn_message">{{ validation.warnings.authors|safe }}</div></td></tr>

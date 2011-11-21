@@ -96,19 +96,19 @@ def perform_postREDESIGN(submission):
     try:
         draft = Document.objects.get(name=submission.filename)
         save_document_in_history(draft)
-        draft.tags.remove(DocInfoTagName.objects.get(slug="exp-tomb"))
+        draft.tags.remove(DocTagName.objects.get(slug="exp-tomb"))
     except Document.DoesNotExist:
         draft = Document(name=submission.filename)
         draft.intended_std_level = None
 
+    draft.type_id = "draft"
     draft.time = datetime.datetime.now()
     draft.title = submission.id_document_name
     draft.group_id = group_id
     draft.rev = submission.revision
     draft.pages = submission.txt_page_count
     draft.abstract = submission.abstract
-    was_rfc = draft.state_id == "rfc"
-    draft.state_id = "active"
+    was_rfc = draft.get_state_slug() == "rfc"
 
     if draft.name.startswith("draft-iab-"):
         stream_slug = "iab"
@@ -121,6 +121,11 @@ def perform_postREDESIGN(submission):
 
     draft.stream = DocStreamName.objects.get(slug=stream_slug)
     draft.save()
+
+    draft.set_state(State.objects.get(type="draft", slug="active"))
+    if draft.stream_id == "ietf":
+        # automatically set state "WG Document"
+        draft.set_state(State.objects.get(type="draft-stream-%s" % draft.stream_id, slug="wg-doc"))
 
     DocAlias.objects.get_or_create(name=submission.filename, document=draft)
 
@@ -158,7 +163,7 @@ def perform_postREDESIGN(submission):
     submission.status_id = POSTED
 
     announce_to_lists(submission)
-    if draft.iesg_state != None and not was_rfc:
+    if draft.get_state("draft-iesg") != None and not was_rfc:
         announce_new_version(submission, draft, state_change_msg)
     announce_to_authors(submission)
 
@@ -455,10 +460,25 @@ class DraftValidation(object):
 
     def validate_metadata(self):
         self.validate_revision()
+        self.validate_title()
         self.validate_authors()
         self.validate_abstract()
         self.validate_creation_date()
         self.validate_wg()
+        self.validate_files()
+
+    def validate_files(self):
+        if self.draft.status_id in [POSTED, POSTED_BY_SECRETARIAT]:
+            return
+        for ext in self.draft.file_type.split(','):
+            source = os.path.join(settings.IDSUBMIT_STAGING_PATH, '%s-%s%s' % (self.draft.filename, self.draft.revision, ext))
+            if not os.path.exists(source):
+                self.add_warning('document_files', '"%s" were not found in the staging area.<br />We recommend you that you cancel this submission and upload your files again.' % os.path.basename(source))
+                break
+
+    def validate_title(self):
+        if not self.draft.id_document_name:
+            self.add_warning('title', 'Title is empty or was not found')
 
     def validate_wg(self):
         if self.wg and not self.wg.status_id == IETFWG.ACTIVE:

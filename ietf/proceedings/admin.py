@@ -86,6 +86,7 @@ if not settings.USE_DB_REDESIGN_PROXY_CLASSES:
     admin.site.register(WgMeetingSession, WgMeetingSessionAdmin)
 
 class WgProceedingsActivitiesAdmin(admin.ModelAdmin):
+    list_display = ['meeting', 'group_acronym', 'activity', 'act_date', 'act_time', 'act_by', ]
     list_filter = ['meeting', ]
     pass
 admin.site.register(WgProceedingsActivities, WgProceedingsActivitiesAdmin)

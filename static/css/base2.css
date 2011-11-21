@@ -133,6 +133,11 @@ table.ballot_icon td.ballot_icon_my { border: 3px outset black;}
 .ietf-highlight-r { padding:0 2px;background:#ffa0a0;}
 .ietf-divider { background: #2647a0; color: white; font-size:116%; padding:0.5em 1em; }
 
+.error-text {
+	font-size: 1.095em;
+	width: 48em;
+}
+
 form .actions {
   margin-top: 20px;
 }
@@ -155,3 +160,12 @@ form table .help {
 }
 
 @media print { .noprint { display: none } }
+
+.color1 { color: #ffb000; }
+.color2 { color: #00ffff; }
+.bgcolor1 { background-color: #ffb000; }
+.bgcolor2 { background-color: #00ffff; }
+.square { width: 0.8ex; height: 0.8ex; margin: 0; padding: 0; display: inline-block; position: relative; top: 0.8ex; text-align: top;}
+.big	{ font-size: 109.5%; margin: 0; padding: 0; }
+.large  { font-size: 120%; margin: 0; padding: 0; }
+.huge	{ font-size: 144%; margin: 0; padding: 0; }

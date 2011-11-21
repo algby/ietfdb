@@ -1,10 +1,21 @@
 from django.db import models
+from django.conf import settings
+from ietf.idtracker.models import InternetDraft
 
 from ietf.idrfc.idrfc_wrapper import IdRfcWrapper, IdWrapper
 from ietf.ietfworkflows.models import StreamedID, Stream
 
 
 def get_streamed_draft(draft):
+    if settings.USE_DB_REDESIGN_PROXY_CLASSES:
+        class Dummy: pass
+        o = Dummy()
+        o.draft = draft
+        o.stream = super(InternetDraft, draft).stream
+        o.group = draft.group
+        o.get_group = lambda x: draft.group
+        return o
+
     if not draft:
         return None
     try:
@@ -14,6 +25,11 @@ def get_streamed_draft(draft):
 
 
 def get_stream_from_draft(draft):
+    if settings.USE_DB_REDESIGN_PROXY_CLASSES:
+        s = super(InternetDraft, draft).stream
+        s.with_groups = s.slug in ["ietf", "irtf"]
+        return s
+
     streamedid = get_streamed_draft(draft)
     if streamedid:
         return streamedid.stream
@@ -21,6 +37,9 @@ def get_stream_from_draft(draft):
 
 
 def get_stream_by_name(stream_name):
+    if settings.USE_DB_REDESIGN_PROXY_CLASSES:
+        raise NotImplementedError
+
     try:
         return Stream.objects.get(name=stream_name)
     except Stream.DoesNotExist:
@@ -28,61 +47,23 @@ def get_stream_by_name(stream_name):
 
 
 def get_stream_from_id(stream_id):
+    if settings.USE_DB_REDESIGN_PROXY_CLASSES:
+        raise NotImplementedError
+
     try:
         return Stream.objects.get(id=stream_id)
     except Stream.DoesNotExist:
         return None
 
 
-def get_chair_model(stream):
-    model_str = stream.group_chair_model
-    if not model_str:
-        return None
-    try:
-        app, model = model_str.split('.', 1)
-    except ValueError:
-        return None
-    chair_model = models.get_model(app, model)
-    if not chair_model:
-        return
-    return chair_model
-
-
-def _get_group_from_acronym(group_model_str, acronym):
-    try:
-        app, model = group_model_str.split('.', 1)
-    except ValueError:
-        return None
-    group_model = models.get_model(app, model)
-    if not group_model:
-        return
-    if 'acronym' in group_model._meta.get_all_field_names():
-        try:
-            return group_model._default_manager.get(acronym=acronym)
-        except group_model.DoesNotExist:
-            return None
-    elif 'group_acronym' in group_model._meta.get_all_field_names():
-        try:
-            return group_model._default_manager.get(group_acronym__acronym=acronym)
-        except group_model.DoesNotExist:
-            return None
-    else:
-        return None
-
-
 def _set_stream_automatically(draft, stream):
-    streamed = StreamedID.objects.create(stream=stream, draft=draft)
-    if not stream or not stream.with_groups:
-        return
-    try:
-        draft_literal, stream_name, group_name, extra = draft.filename.split('-', 3)
-        if stream_name.lower() == stream.name.lower():
-            group = _get_group_from_acronym(stream.group_model, group_name)
-            if group:
-                streamed.group = group
-                streamed.save()
-    except ValueError:
-        return
+    if settings.USE_DB_REDESIGN_PROXY_CLASSES:
+        raise NotImplementedError
+    (streamed, created) = StreamedID.objects.get_or_create(draft=draft)
+    if created:
+        streamed.stream = stream
+        streamed.save()
+    return
 
 
 def get_stream_from_wrapper(idrfc_wrapper):
@@ -94,6 +75,9 @@ def get_stream_from_wrapper(idrfc_wrapper):
     if not idwrapper:
         return None
     draft = idwrapper._draft
+    if settings.USE_DB_REDESIGN_PROXY_CLASSES:
+        return super(InternetDraft, draft).stream
+
     stream = get_stream_from_draft(draft)
     if stream == False:
         stream_id = idwrapper.stream_id()
@@ -106,6 +90,9 @@ def get_stream_from_wrapper(idrfc_wrapper):
 
 
 def set_stream_for_draft(draft, stream):
+    if settings.USE_DB_REDESIGN_PROXY_CLASSES:
+        raise NotImplementedError
+
     (streamed, created) = StreamedID.objects.get_or_create(draft=draft)
     if streamed.stream != stream:
         streamed.stream = stream

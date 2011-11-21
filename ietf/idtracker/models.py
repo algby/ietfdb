@@ -712,6 +712,8 @@ class DocumentComment(models.Model):
 	return datetime.datetime.combine( self.date, datetime.time( * [int(s) for s in self.time.split(":")] ) )
     def doc_id(self):
         return self.document_id
+    def doc_name(self):
+        return self.document.draft.filename
     class Meta:
         db_table = 'document_comments'
         
@@ -1152,8 +1154,8 @@ if settings.USE_DB_REDESIGN_PROXY_CLASSES:
     IESGLoginOld = IESGLogin
     IETFWGOld = IETFWG
     IRTFOld = IRTF
-    from redesign.doc.proxy import InternetDraft, IDInternal, BallotInfo, Rfc
-    from redesign.name.proxy import IDState, IDSubState
+    from redesign.doc.proxy import InternetDraft, IDInternal, BallotInfo, Rfc, IDState
+    from redesign.name.proxy import IDSubState
     from redesign.group.proxy import Area, Acronym, IETFWG, IRTF
     from redesign.person.proxy import IESGLogin
 

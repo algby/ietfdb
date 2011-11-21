@@ -11,6 +11,8 @@ from django.core.urlresolvers import reverse as urlreverse
 from ietf.utils.mail import send_mail, send_mail_text
 from ietf.idtracker.models import *
 from ietf.ipr.search import iprs_from_docs
+from ietf.ietfworkflows.streams import (get_stream_from_draft)
+from ietf.ietfworkflows.models import (Stream)
 from redesign.doc.models import WriteupDocEvent, BallotPositionDocEvent, LastCallDocEvent, DocAlias
 from redesign.person.models import Person
 
@@ -256,6 +258,12 @@ def generate_approval_mail_rfc_editor(request, doc):
     disapproved = doc.idinternal.cur_state_id in IDState.DO_NOT_PUBLISH_STATES
     doc_type = "RFC" if type(doc) == Rfc else "Internet Draft"
     
+    stream = get_stream_from_draft(doc)
+    to = ", ".join([u"%s <%s>" % x.email() for x in stream.get_chairs_for_document(doc) ])
+    if stream.name == "IRTF":
+    	# also send to the IRSG
+        to += ", Internet Research Steering Group (IRSG) <irsg@irtf.org>"
+
     return render_to_string("idrfc/approval_mail_rfc_editor.txt",
                             dict(doc=doc,
                                  doc_url=settings.IDTRACKER_BASE_URL + doc.idinternal.get_absolute_url(),
@@ -263,13 +271,14 @@ def generate_approval_mail_rfc_editor(request, doc):
                                  status=status,
                                  full_status=full_status,
                                  disapproved=disapproved,
+                                 to=to,
                                  )
                             )
 
 DO_NOT_PUBLISH_IESG_STATES = ("nopubadw", "nopubanw")
 
 def generate_approval_mailREDESIGN(request, doc):
-    if doc.iesg_state_id in DO_NOT_PUBLISH_IESG_STATES or doc.tags.filter(slug='via-rfc'):
+    if doc.get_state_slug("draft-iesg") in DO_NOT_PUBLISH_IESG_STATES or doc.tags.filter(slug='via-rfc'):
         mail = generate_approval_mail_rfc_editor(request, doc)
     else:
         mail = generate_approval_mail_approved(request, doc)
@@ -320,7 +329,7 @@ def generate_approval_mail_approved(request, doc):
     else:
         contacts = "The IESG contact person is %s." % director.name
 
-    doc_type = "RFC" if doc.state_id == "rfc" else "Internet Draft"
+    doc_type = "RFC" if doc.get_state_slug() == "rfc" else "Internet Draft"
         
     return render_to_string("idrfc/approval_mail.txt",
                             dict(doc=doc,
@@ -338,9 +347,27 @@ def generate_approval_mail_approved(request, doc):
 def generate_approval_mail_rfc_editorREDESIGN(request, doc):
     full_status = full_intended_status(doc.intended_std_level.name)
     status = full_status.replace("a ", "").replace("an ", "")
-    disapproved = doc.iesg_state_id in DO_NOT_PUBLISH_IESG_STATES
-    doc_type = "RFC" if doc.state_id == "rfc" else "Internet Draft"
-    
+    disapproved = doc.get_state_slug("draft-iesg") in DO_NOT_PUBLISH_IESG_STATES
+    doc_type = "RFC" if doc.get_state_slug() == "rfc" else "Internet Draft"
+
+    to = []
+    if doc.group:
+        for r in doc.group.roles_set.filter(name="chair").select_related():
+            to.append(r.formatted_email())
+
+        if doc.stream_id == "ise":
+            # include ISE chair
+            g = Group.objects.get(type='individ')
+            for r in g.roles_set.filter(name="chair").select_related():
+                to.append(r.formatted_email())
+        elif doc.stream_id == "irtf":
+            # include IRTF chair
+            g = Group.objects.get(type='irtf')
+            for r in g.roles_set.filter(name="chair").select_related():
+                to.append(r.formatted_email())
+            # and IRSG
+            to.append('"Internet Research Steering Group" <irsg@irtf.org>')
+
     return render_to_string("idrfc/approval_mail_rfc_editor.txt",
                             dict(doc=doc,
                                  doc_url=settings.IDTRACKER_BASE_URL + doc.get_absolute_url(),
@@ -348,6 +375,7 @@ def generate_approval_mail_rfc_editorREDESIGN(request, doc):
                                  status=status,
                                  full_status=full_status,
                                  disapproved=disapproved,
+                                 to=", ".join(to),
                                  )
                             )
 
@@ -619,7 +647,7 @@ def email_last_call_expired(doc):
               cc="iesg-secretary@ietf.org")
 
 def email_last_call_expiredREDESIGN(doc):
-    text = "IETF Last Call has ended, and the state has been changed to\n%s." % doc.iesg_state.name
+    text = "IETF Last Call has ended, and the state has been changed to\n%s." % doc.get_state("draft-iesg").name
     
     send_mail(None,
               "iesg@ietf.org",

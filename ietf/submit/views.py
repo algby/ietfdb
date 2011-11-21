@@ -26,8 +26,13 @@ def submit_index(request):
             if form.is_valid():
                 submit = form.save()
                 return HttpResponseRedirect(reverse(draft_status, None, kwargs={'submission_id': submit.submission_id, 'submission_hash': submit.get_hash()}))
-        except IOError:
-            form = UploadForm(request=request)
+        except IOError, e:
+            if "Client read error" in str(e): # The server got an IOError when trying to read POST data
+                form = UploadForm(request=request)
+                form._errors = {}
+                form._errors["__all__"] = form.error_class(["There was a failure receiving the complete form data -- please try again."])
+            else:
+                raise
     else:
         form = UploadForm(request=request)
     return render_to_response('submit/submit_index.html',

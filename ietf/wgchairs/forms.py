@@ -3,6 +3,7 @@ import datetime
 from django import forms
 from django.conf import settings
 from django.core.mail import EmailMessage
+from django.db.models import Q
 from django.forms.models import BaseModelFormSet
 from django.template.loader import render_to_string
 from django.utils.safestring import mark_safe
@@ -18,8 +19,10 @@ from ietf.utils.mail import send_mail_text
 
 from workflows.models import Transition
 
+from redesign.doc.models import WriteupDocEvent
 from redesign.person.models import Person, Email
 from redesign.group.models import Role, RoleName
+from redesign.name.models import DocTagName
 
 
 class RelatedWGForm(forms.Form):
@@ -194,17 +197,20 @@ def assign_shepherd(user, internetdraft, shepherd):
     doc = Document.objects.get(name=internetdraft.name)
     
     save_document_in_history(doc)
-    e = DocEvent(doc=doc, by=user.get_profile())
+
+    doc.time = datetime.datetime.now()
+    doc.shepherd = shepherd
+    doc.save()
+
+    e = DocEvent(type="changed_document")
+    e.time = doc.time
+    e.doc = doc
+    e.by = user.get_profile()
     if not shepherd:
         e.desc = u"Unassigned shepherd"
     else:
         e.desc = u"Changed shepherd to %s" % shepherd.name
-    e.type = "changed_document"
     e.save()
-            
-    doc.time = e.time
-    doc.shepherd = shepherd
-    doc.save()
 
     # update proxy too
     internetdraft.shepherd = shepherd
@@ -221,6 +227,19 @@ class AddDelegateForm(RelatedWGForm):
 
     def get_next_form(self):
         return self.next_form
+
+    def get_person(self, email):
+        if settings.USE_DB_REDESIGN_PROXY_CLASSES:
+            raise NotImplementedError
+        persons = PersonOrOrgInfo.objects.filter(emailaddress__address=email).filter(
+            Q(iesglogin__isnull=False)|
+            Q(legacywgpassword__isnull=False)|
+            Q(legacyliaisonuser__isnull=False)).distinct()
+        if not persons:
+            raise PersonOrOrgInfo.DoesNotExist
+        if len(persons) > 1:
+            raise PersonOrOrgInfo.MultipleObjectsReturned
+        return persons[0]
 
     def save(self):
         email = self.cleaned_data.get('email')
@@ -293,7 +312,10 @@ class MultipleDelegateForm(AddDelegateForm):
         if settings.USE_DB_REDESIGN_PROXY_CLASSES:
             self.fields['persons'].choices = [(i.pk, unicode(i)) for i in Person.objects.filter(email__address=self.email).exclude(user=None).distinct().order_by('name')]
         else:
-            self.fields['persons'].choices = [(i.pk, unicode(i)) for i in PersonOrOrgInfo.objects.filter(emailaddress__address=self.email, iesglogin__isnull=False).distinct().order_by('first_name')]
+            self.fields['persons'].choices = [(i.pk, unicode(i)) for i in PersonOrOrgInfo.objects.filter(emailaddress__address=self.email).filter(
+                    Q(iesglogin__isnull=False)|
+                    Q(legacywgpassword__isnull=False)|
+                    Q(legacyliaisonuser__isnull=False)).distinct().order_by('first_name')]
 
     def save(self):
         person_id = self.cleaned_data.get('persons')
@@ -402,14 +424,25 @@ class WriteUpEditForm(RelatedWGForm):
         return self.data.get('writeup', self.doc_writeup and self.doc_writeup.writeup or '')
 
     def save(self):
-        if not self.doc_writeup:
-            self.doc_writeup = ProtoWriteUp.objects.create(
-                person=self.person,
-                draft=self.doc,
-                writeup=self.cleaned_data['writeup'])
+        if settings.USE_DB_REDESIGN_PROXY_CLASSES:
+            e = WriteupDocEvent(type="changed_protocol_writeup")
+            e.doc = self.doc
+            e.by = self.person
+            e.desc = e.get_type_display()
+            e.text = self.cleaned_data['writeup']
+            e.save()
+            from ietf.wgchairs.models import ProtoWriteUpProxy
+            self.doc_writeup = ProtoWriteUpProxy.objects.get(pk=e.pk)
         else:
-            self.doc_writeup.writeup = self.cleaned_data['writeup']
-            self.doc_writeup.save()
+            if not self.doc_writeup:
+                self.doc_writeup = ProtoWriteUp.objects.create(
+                    person=self.person,
+                    draft=self.doc,
+                    writeup=self.cleaned_data['writeup'])
+            else:
+                self.doc_writeup.writeup = self.cleaned_data['writeup']
+                self.doc_writeup.save()
+
         if self.data.get('modify_tag', False):
             followup = self.cleaned_data.get('followup', False)
             comment = self.cleaned_data.get('comment', False)
@@ -418,13 +451,20 @@ class WriteUpEditForm(RelatedWGForm):
             except PersonOrOrgInfo.DoesNotExist:
                 shepherd = None
             if shepherd:
-                extra_notify = ['%s <%s>' % shepherd.email()]
+                if settings.USE_DB_REDESIGN_PROXY_CLASSES:
+                    extra_notify = [shepherd.formatted_email()]
+                else:
+                    extra_notify = ['%s <%s>' % shepherd.email()]
             else:
                 extra_notify = []
-            if followup:
-                update_tags(self.doc, comment, self.person, set_tags=[FOLLOWUP_TAG], extra_notify=extra_notify)
+            if settings.USE_DB_REDESIGN_PROXY_CLASSES:
+                tags = DocTagName.objects.filter(slug="sheph-u")
             else:
-                update_tags(self.doc, comment, self.person, reset_tags=[FOLLOWUP_TAG], extra_notify=extra_notify)
+                tags = [FOLLOWUP_TAG]
+            if followup:
+                update_tags(self.doc, comment, self.person, set_tags=tags, extra_notify=extra_notify)
+            else:
+                update_tags(self.doc, comment, self.person, reset_tags=tags, extra_notify=extra_notify)
         return self.doc_writeup
 
     def is_valid(self):

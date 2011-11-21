@@ -14,13 +14,13 @@ management.setup_environ(settings)
 from redesign.doc.models import *
 from redesign.group.models import *
 from redesign.name.models import *
-from redesign.importing.utils import old_person_to_person, person_name
+from redesign.importing.utils import old_person_to_person
 from redesign.name.utils import name
 from ietf.idtracker.models import InternetDraft, IDInternal, IESGLogin, DocumentComment, PersonOrOrgInfo, Rfc, IESGComment, IESGDiscuss, BallotInfo, Position
 from ietf.idrfc.models import RfcIndex, DraftVersions
 from ietf.idrfc.mirror_rfc_index import get_std_level_mapping, get_stream_mapping
-#from ietf.ietfworkflows.utils import get_state_for_draft
 
+import sys
 
 document_name_to_import = None
 if len(sys.argv) > 1:
@@ -46,7 +46,6 @@ connection.queries = DummyQueries()
 # IESGComment, IESGDiscuss, DocumentComment, IDAuthor, idrfc.RfcIndex,
 # idrfc.DraftVersions
 
-
 def alias_doc(name, doc):
     DocAlias.objects.filter(name=name).exclude(document=doc).delete()
     alias, _ = DocAlias.objects.get_or_create(name=name, document=doc)
@@ -61,13 +60,13 @@ relationship_updates = name(DocRelationshipName, "updates", "Updates")
 relationship_obsoletes = name(DocRelationshipName, "obs", "Obsoletes")
 
 intended_std_level_mapping = {
-    "Proposed Standard": name(IntendedStdLevelName, "ps", name="Proposed Standard", order=1),
-    "Draft Standard": name(IntendedStdLevelName, "ds", name="Draft Standard", order=2),
-    "Standard": name(IntendedStdLevelName, "std", name="Standard", order=3),
-    "BCP": name(IntendedStdLevelName, "bcp", "Best Current Practice", order=4),
-    "Informational": name(IntendedStdLevelName, "inf", name="Informational", order=5),
-    "Experimental": name(IntendedStdLevelName, "exp", name="Experimental", order=6),
-    "Historic": name(IntendedStdLevelName, "hist", name="Historic", order=7),
+    "BCP": name(IntendedStdLevelName, "bcp", "Best Current Practice"),
+    "Draft Standard": name(IntendedStdLevelName, "ds", name="Draft Standard"),
+    "Experimental": name(IntendedStdLevelName, "exp", name="Experimental"),
+    "Historic": name(IntendedStdLevelName, "hist", name="Historic"),
+    "Informational": name(IntendedStdLevelName, "inf", name="Informational"),
+    "Proposed Standard": name(IntendedStdLevelName, "ps", name="Proposed Standard"),
+    "Standard": name(IntendedStdLevelName, "std", name="Standard"),
     "None": None,
     "Request": None,
     }
@@ -137,8 +136,6 @@ substate_mapping = {
     "Point Raised - writeup needed": name(DocInfoTagName, 'point', "Point Raised - writeup needed", 'IESG discussions on the document have raised some issues that need to be brought to the attention of the authors/WG, but those issues have not been written down yet. (It is common for discussions during a telechat to result in such situations. An AD may raise a possible issue during a telechat and only decide as a result of that discussion whether the issue is worth formally writing up and bringing to the attention of the authors/WG). A document stays in the "Point Raised - Writeup Needed" state until *ALL* IESG comments that have been raised have been documented.', 1)
     }
 
-#wg_state_mapping = dict([(s.slug, s) for s in WGDocStateName.objects.all()] + [(None, None)])
-
 tag_review_by_rfc_editor = name(DocInfoTagName, 'rfc-rev', "Review by RFC Editor")
 tag_via_rfc_editor = name(DocInfoTagName, 'via-rfc', "Via RFC Editor")
 tag_expired_tombstone = name(DocInfoTagName, 'exp-tomb', "Expired tombstone")
@@ -193,9 +190,12 @@ def iesg_login_to_person(l):
             
         try:
             return old_person_to_person(l.person)
-        except Person.DoesNotExist:
-            print "MISSING IESG LOGIN", l.person, l.person.email()
-            return None
+        except Email.DoesNotExist:
+            try:
+                return Person.objects.get(name="%s %s" % (l.person.first_name, l.person.last_name))
+            except Person.DoesNotExist:
+                print "MISSING IESG LOGIN", l.person, l.person.email()
+                return None
 
 def iesg_login_is_secretary(l):
     # Amy has two users, for some reason, we sometimes get the wrong one
@@ -214,8 +214,8 @@ def date_in_match(match):
 
 re_telechat_agenda = re.compile(r"(Placed on|Removed from) agenda for telechat(| - %s) by" % date_re_str)
 re_telechat_changed = re.compile(r"Telechat date (was|has been) changed to (<b>)?%s(</b>)? from" % date_re_str)
-re_ballot_position = re.compile(r"\[Ballot Position Update\] (New position, (?P<position>.*), has been recorded( for (?P<for>\w+ \w+) |)|Position (|for (?P<for2>.*) )has been changed to (?P<position2>.*) from .*)(by (?P<by>.*)|)")
-re_ballot_issued = re.compile(r"Ballot has been issued")
+re_ballot_position = re.compile(r"\[Ballot Position Update\] (New position, (?P<position>.*), has been recorded (|for (?P<for>.*) )|Position (|for (?P<for2>.*) )has been changed to (?P<position2>.*) from .*)by (?P<by>.*)")
+re_ballot_issued = re.compile(r"Ballot has been issued(| by)")
 re_state_changed = re.compile(r"(State (has been changed|changed|Changes) to <b>(?P<to>.*)</b> from (<b>|)(?P<from>.*)(</b> by|)|Sub state has been changed to (?P<tosub>.*) from (?P<fromsub>.*))")
 re_note_changed = re.compile(r"(\[Note\]: .*'.*'|Note field has been cleared)", re.DOTALL)
 re_draft_added = re.compile(r"Draft [Aa]dded (by .*)?( in state (?P<state>.*))?")
@@ -288,10 +288,7 @@ def import_from_idinternal(d, idinternal):
         match = re_ballot_position.search(c.comment_text)
         if match:
             position = ballot_position_mapping[match.group('position') or match.group('position2')]
-            # some of the old positions don't specify who it's for, in
-            # that case assume it's "by", the person who entered the
-            # position
-            ad_name = match.group('for') or match.group('for2') or match.group('by') or (u"%s %s" % (c.created_by.first_name, c.created_by.last_name) if c.created_by else "")
+            ad_name = match.group('for') or match.group('for2') or match.group('by') # some of the old positions don't specify who it's for, in that case assume it's "by", the person who entered the position
             ad_first, ad_last = ad_name.split(' ')
             login = IESGLogin.objects.filter(first_name=ad_first, last_name=ad_last).order_by('user_level')[0]
             if iesg_login_is_secretary(login):
@@ -313,7 +310,7 @@ def import_from_idinternal(d, idinternal):
 
                 found = False
                 for p in positions:
-                    if not BallotPositionDocEvent.objects.filter(doc=d, type="changed_ballot_position", pos=position, ad=iesg_login_to_person(p.ad)):
+                    if not d.docevent_set.filter(type="changed_ballot_position", ballotposition__pos=position, ballotposition__ad=iesg_login_to_person(p.ad)):
                         login = p.ad
                         found = True
                         break
@@ -778,7 +775,7 @@ for index, o in enumerate(all_drafts.iterator()):
         d.stream = stream_mapping["INDEPENDENT"]
     else:
         d.stream = stream_mapping["IETF"]
-    d.wg_state = None #wg_state_mapping[get_state_for_draft(o)]
+    d.wg_state = None
     d.iesg_state = iesg_state_mapping[None]
     d.iana_state = None
     d.rfc_state = None
@@ -787,7 +784,7 @@ for index, o in enumerate(all_drafts.iterator()):
     d.pages = o.txt_page_count
     d.intended_std_level = intended_std_level_mapping[o.intended_status.intended_status]
     d.ad = None
-    d.shepherd = old_person_to_person(o.shepherd) if o.shepherd else None
+    d.shepherd = None
     d.notify = ""
     d.external_url = ""
     d.note = ""
@@ -805,7 +802,7 @@ for index, o in enumerate(all_drafts.iterator()):
     d.authors.clear()
     for i, a in enumerate(o.authors.all().select_related("person").order_by('author_order', 'person')):
         try:
-            e = Email.objects.get(address__iexact=a.email() or a.person.email()[1] or u"unknown-email-%s" % person_name(a.person).replace(" ", "-"))
+            e = Email.objects.get(address__iexact=a.email() or a.person.email()[1] or u"unknown-email-%s-%s" % (a.person.first_name, a.person.last_name))
             # renumber since old numbers may be a bit borked
             DocumentAuthor.objects.create(document=d, author=e, order=i)
         except Email.DoesNotExist:

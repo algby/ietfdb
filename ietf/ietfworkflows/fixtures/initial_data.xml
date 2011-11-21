@@ -2,7 +2,7 @@
 <django-objects version="1.0">
     <object pk="1" model="workflows.workflow">
         <field type="CharField" name="name">Default WG Workflow</field>
-        <field to="workflows.state" name="initial_state" rel="ManyToOneRel">14</field>
+        <field to="workflows.state" name="initial_state" rel="ManyToOneRel">11</field>
     </object>
     <object pk="2" model="workflows.workflow">
         <field type="CharField" name="name">IAB Workflow</field>
@@ -150,21 +150,6 @@
         <field type="CharField" name="name">Parked WG Document</field>
         <field to="workflows.workflow" name="workflow" rel="ManyToOneRel">1</field>
         <field to="workflows.transition" name="transitions" rel="ManyToManyRel"><object pk="12"></object></field>
-    </object>
-    <object pk="52" model="workflows.state">
-        <field type="CharField" name="name">Published RFC</field>
-        <field to="workflows.workflow" name="workflow" rel="ManyToOneRel">3</field>
-        <field to="workflows.transition" name="transitions" rel="ManyToManyRel"></field>
-    </object>
-    <object pk="60" model="workflows.state">
-        <field type="CharField" name="name">Published RFC</field>
-        <field to="workflows.workflow" name="workflow" rel="ManyToOneRel">4</field>
-        <field to="workflows.transition" name="transitions" rel="ManyToManyRel"></field>
-    </object>
-    <object pk="39" model="workflows.state">
-        <field type="CharField" name="name">Published RFC</field>
-        <field to="workflows.workflow" name="workflow" rel="ManyToOneRel">2</field>
-        <field to="workflows.transition" name="transitions" rel="ManyToManyRel"></field>
     </object>
     <object pk="57" model="workflows.state">
         <field type="CharField" name="name">Response to Review Needed</field>
@@ -432,30 +417,26 @@
     </object>
     <object pk="1" model="ietfworkflows.stream">
         <field type="CharField" name="name">IETF</field>
-        <field type="BooleanField" name="with_groups">True</field>
-        <field type="CharField" name="group_model">idtracker.IETFWG</field>
-        <field type="CharField" name="group_chair_model">idtracker.WGChair</field>
+        <field type="CharField" name="document_group_attribute">group.ietfwg</field>
+        <field type="CharField" name="group_chair_attribute">chairs</field>
         <field to="ietfworkflows.wgworkflow" name="workflow" rel="ManyToOneRel">1</field>
     </object>
     <object pk="2" model="ietfworkflows.stream">
         <field type="CharField" name="name">IAB</field>
-        <field type="BooleanField" name="with_groups">False</field>
-        <field type="CharField" name="group_model"></field>
-        <field type="CharField" name="group_chair_model"></field>
+        <field type="CharField" name="document_group_attribute"></field>
+        <field type="CharField" name="group_chair_attribute"></field>
         <field to="ietfworkflows.wgworkflow" name="workflow" rel="ManyToOneRel">2</field>
     </object>
     <object pk="3" model="ietfworkflows.stream">
         <field type="CharField" name="name">IRTF</field>
-        <field type="BooleanField" name="with_groups">True</field>
-        <field type="CharField" name="group_model">idtracker.IRTF</field>
-        <field type="CharField" name="group_chair_model">idtracker.IRTFChair</field>
+        <field type="CharField" name="document_group_attribute"></field>
+        <field type="CharField" name="group_chair_attribute"></field>
         <field to="ietfworkflows.wgworkflow" name="workflow" rel="ManyToOneRel">3</field>
     </object>
     <object pk="4" model="ietfworkflows.stream">
         <field type="CharField" name="name">ISE</field>
-        <field type="BooleanField" name="with_groups">False</field>
-        <field type="CharField" name="group_model"></field>
-        <field type="CharField" name="group_chair_model"></field>
+        <field type="CharField" name="document_group_attribute"></field>
+        <field type="CharField" name="group_chair_attribute"></field>
         <field to="ietfworkflows.wgworkflow" name="workflow" rel="ManyToOneRel">4</field>
     </object>
     <object pk="1" model="ietfworkflows.statedescription">
