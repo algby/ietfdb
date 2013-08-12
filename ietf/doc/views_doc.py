@@ -57,9 +57,9 @@ def render_document_top(request, doc, tab, name):
     ballot = doc.latest_event(BallotDocEvent, type="created_ballot")
     if doc.type_id in ("draft","conflrev", "statchg"):
         # if doc.in_ietf_process and doc.ietf_process.has_iesg_ballot:
-        tabs.append(("IESG Evaluation Record", "ballot", urlreverse("doc_ballot", kwargs=dict(name=name)), ballot))
+        tabs.append(("IESG Evaluation Record", "ballot", urlreverse("doc_ballot", kwargs=dict(name=name)), ballot,  None if ballot else "IESG Evaluation Ballot has not been created yet"))
     elif doc.type_id == "charter":
-        tabs.append(("IESG Review", "ballot", urlreverse("doc_ballot", kwargs=dict(name=name)), ballot))
+        tabs.append(("IESG Review", "ballot", urlreverse("doc_ballot", kwargs=dict(name=name)), ballot, None if ballot else "IEST Review Ballot has not been created yet"))
 
     # FIXME: if doc.in_ietf_process and doc.ietf_process.has_iesg_ballot:
     if doc.type_id not in ["conflrev", "statchg"]:
@@ -133,9 +133,7 @@ def document_main(request, name, rev=None):
 
     # specific document types
     if doc.type_id == "draft":
-        split_content = not request.GET.get('include_text')
-        if request.COOKIES.get("full_draft", "") == "on":
-            split = False
+        split_content = not ( request.GET.get('include_text') or request.COOKIES.get("full_draft", "") == "on" )
 
         iesg_state = doc.get_state("draft-iesg")
 
@@ -143,7 +141,7 @@ def document_main(request, name, rev=None):
         stream_slugs = StreamName.objects.values_list("slug", flat=True)
         can_change_stream = bool(can_edit or (
                 request.user.is_authenticated() and
-                Role.objects.filter(name__in=("chair", "auth"),
+                Role.objects.filter(name__in=("chair", "secr", "auth", "delegate"),
                                     group__acronym__in=stream_slugs,
                                     person__user=request.user)))
         can_edit_iana_state = has_role(request.user, ("Secretariat", "IANA"))
@@ -284,8 +282,8 @@ def document_main(request, name, rev=None):
 
         if ((not doc.stream_id or doc.stream_id in ("ietf", "irtf")) and group.type_id == "individ" and
             (request.user.is_authenticated() and
-             Role.objects.filter(person__user=request.user, name__in=("chair", "delegate"),
-                                 group__type__in=("wg",),
+             Role.objects.filter(person__user=request.user, name__in=("chair", "secr", "delegate"),
+                                 group__type__in=("wg","rg"),
                                  group__state="active")
              or has_role(request.user, "Secretariat"))):
             actions.append(("Adopt in Group", urlreverse('edit_adopt', kwargs=dict(name=doc.name))))
@@ -302,6 +300,13 @@ def document_main(request, name, rev=None):
             if not doc.intended_std_level:
                 label += " (note that intended status is not set)"
             actions.append((label, urlreverse('conflict_review_start', kwargs=dict(name=doc.name))))
+
+        if (doc.get_state_slug() != "expired" and doc.stream_id in ("iab", "ise", "irtf")
+            and can_edit_stream_info and not iesg_state):
+            label = "Request Publication"
+            if not doc.intended_std_level:
+                label += " (note that intended status is not set)"
+            actions.append((label, urlreverse('doc_request_publication', kwargs=dict(name=doc.name))))
 
         if doc.get_state_slug() != "expired" and doc.stream_id in ("ietf",) and can_edit and not iesg_state:
             actions.append(("Begin IESG Processing", urlreverse('doc_edit_info', kwargs=dict(name=doc.name)) + "?new=1"))
@@ -464,10 +469,17 @@ def document_history(request, name):
     # pick up revisions from events
     diff_revisions = []
 
-    diffable = name.startswith("draft") or name.startswith("charter") or name.startswith("conflict-review") or name.startswith("status-change")
+    diffable = [ name.startswith(prefix) for prefix in ["rfc", "draft", "charter", "conflict-review", "status-change", ]]
     if diffable:
         diff_documents = [ doc ]
         diff_documents.extend(Document.objects.filter(docalias__relateddocument__source=doc, docalias__relateddocument__relationship="replaces"))
+
+        if doc.get_state_slug() == "rfc":
+            e = doc.latest_event(type="published_rfc")
+            aliases = doc.docalias_set.filter(name__startswith="rfc")
+            if aliases:
+                name = aliases[0].name
+            diff_revisions.append((name, "", e.time if e else doc.time, name))
 
         seen = set()
         for e in NewRevisionDocEvent.objects.filter(type="new_revision", doc__in=diff_documents).select_related('doc').order_by("-time", "-id"):
@@ -485,7 +497,7 @@ def document_history(request, name):
             elif name.startswith("status-change"):
                 h = find_history_active_at(e.doc, e.time)
                 url = settings.STATUS_CHANGE_TXT_URL + ("%s-%s.txt" % ((h or doc).canonical_name(), e.rev))
-            elif name.startswith("draft"):
+            elif name.startswith("draft") or name.startswith("rfc"):
                 # rfcdiff tool has special support for IDs
                 url = e.doc.name + "-" + e.rev
 
