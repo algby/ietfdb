@@ -1,0 +1,11 @@
+apache2.conf
+bootstrap.sql
+config.inc.php
+initdb.sh
+mysql.sh
+php.ini
+rundb.sh
+runweb.sh
+settings_local.py
+shutdb.sh
+shutit.sh
