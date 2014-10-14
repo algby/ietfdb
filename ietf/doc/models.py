@@ -178,6 +178,8 @@ class DocumentInfo(models.Model):
     class Meta:
         abstract = True
 
+STATUSCHANGE_RELATIONS = ('tops','tois','tohist','toinf','tobcp','toexp')
+
 class RelatedDocument(models.Model):
     source = models.ForeignKey('Document')
     target = models.ForeignKey('DocAlias')
@@ -637,6 +639,9 @@ class DocEvent(models.Model):
     by = models.ForeignKey(Person)
     doc = models.ForeignKey('doc.Document')
     desc = models.TextField()
+
+    def for_current_revision(self):
+        return self.time >= self.doc.time
 
     def get_dochistory(self):
         return DocHistory.objects.filter(time__lte=self.time,doc__name=self.doc.name).order_by('-time').first()
